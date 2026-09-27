@@ -1,0 +1,7 @@
+(executable
+ (public_name ageism)
+ (name main)
+ (modules
+   main
+   args)
+ (libraries ageism cmdliner eio_main))

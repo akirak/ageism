@@ -1,0 +1,5 @@
+(library
+ (name ageism)
+ (libraries base64 digestif eio eio.unix yojson ppx_yojson_conv_lib)
+ (preprocess
+  (pps ppx_yojson_conv)))

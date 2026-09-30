@@ -1,0 +1,54 @@
+name: Update flake.lock
+
+on:
+  schedule:
+    - cron: "0 0 */5 * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  update:
+    name: Update flake.lock
+    # These permissions are required to push the update branch and open its PR.
+    permissions:
+      contents: write # Push the generated update branch.
+      pull-requests: write # Open or update the pull request.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c # v35
+        with:
+          nix_conf: |
+            accept-flake-config = true
+
+      - name: Update flake.lock
+        run: |
+          nix flake update --inputs-from github:akirak/flake-pins \
+            --override-input nixpkgs ocaml-overlays \
+            --override-input nixpkgs/nixpkgs nixpkgs
+
+      - name: Commit and push update
+        run: |
+          if git diff --quiet -- flake.lock; then
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add flake.lock
+          git commit -m 'Update flake.lock'
+          git push --force-with-lease origin HEAD:update-flake-lock
+
+      - name: Create pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: gh pr create --base "$DEFAULT_BRANCH" --head update-flake-lock --title 'Update flake.lock' --body 'Automated update of flake.lock.' || true

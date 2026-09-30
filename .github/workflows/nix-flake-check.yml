@@ -1,0 +1,45 @@
+name: Check the Nix flake
+
+on:
+  pull_request:
+    paths-ignore:
+      - 'README.*'
+      - 'docs/**'
+
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - 'README.*'
+      - 'docs/**'
+
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c # v35
+        with:
+          nix_conf: |
+            accept-flake-config = true
+
+      - name: Check the flake
+        run: nix flake check -L

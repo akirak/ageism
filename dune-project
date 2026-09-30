@@ -8,7 +8,6 @@
  (name ageism)
  (depends
   (ocaml (>= 5.2))
-   base64
    cmdliner
    digestif
    eio

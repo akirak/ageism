@@ -12,7 +12,7 @@ Ageism is an `age` secret deployment tool for NixOS.
 - **Concurrent & Resilient Deployment**: Uses [Eio](https://github.com/ocaml-multicore/eio) to prepare and deploy to multiple hosts concurrently. Failure on one target does not block deployment to others.
 - **Deduplication & Decryption Caching**: Caches decrypted secrets by SHA-256 hash in memory during a deploy run; secrets shared across multiple hosts (e.g. via symlinks) are only decrypted once.
 - **Incremental Deployment**: Identifies secrets on the target by content hash; only missing or changed secrets are transferred.
-- **Secure Shell Transfer**: Uploads encrypted payloads over interactive shell streams (`ssh` for remote hosts, `sudo` or `run0` for localhost) using base64 heredocs with strict `0600` permissions.
+- **Secure Shell Transfer**: Uploads encrypted payloads to remote hosts over a single multiplexed SSH connection (checks and file transfers share the connection), and through a persistent elevated shell (`sudo` or `run0`) for localhost, with strict `0600` permissions.
 - **Index Generation**: Optionally generates JSON index files mapping secret basenames to their content hashes (`<name>.age -> sha256-<sha256>.age`) for NixOS consumption.
 - **NixOS Install Support**: Deploy directly into a mounted filesystem root via `--install-dir` during `nixos-install`.
 
@@ -42,7 +42,6 @@ Ageism is an `age` secret deployment tool for NixOS.
 `ageism` invokes the following CLI tools:
 
 - [`age`](https://github.com/FiloSottile/age) (for encryption and decryption)
-- `base64` (on target hosts, for decoding uploaded secrets)
 - `ssh` (when targeting remote hosts)
 - `sudo` or `run0` (when deploying to localhost)
 
@@ -50,7 +49,7 @@ Ageism is an `age` secret deployment tool for NixOS.
 
 - OCaml `>= 5.2`
 - [Dune](https://dune.build/) `>= 3.23`
-- OPAM dependencies: `eio`, `eio_main`, `cmdliner`, `yojson`, `ppx_yojson_conv`, `digestif`, `base64`
+- OPAM dependencies: `eio`, `eio_main`, `cmdliner`, `yojson`, `ppx_yojson_conv`, `digestif`
 
 ---
 

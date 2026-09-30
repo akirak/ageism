@@ -43,7 +43,6 @@
               yojson
               ppx_yojson_conv
               cmdliner
-              base64
               digestif
             ];
 

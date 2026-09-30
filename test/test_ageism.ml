@@ -366,10 +366,23 @@ let test_deploy_remote env () =
   Unix.symlink "../../repo/r.age" (dir ^ "/secrets/fakehost/r.age") ;
   write_file (dir ^ "/recip.txt") "age1fake\n" ;
   make_script ~dir "age" fake_age ;
-  (* Fake [ssh]: drop the "root@host" argument and rewrite the remote target
-     directory into a writable location. *)
+  (* Fake [ssh]: skip -o option pairs, succeed immediately for the master
+     (-fN) and control commands (-O), and run the remote command under sh
+     with the target directory rewritten into a writable location. *)
   make_script ~dir "ssh"
-    (Printf.sprintf "shift\nsed -u 's|/var/lib/ageism|%s|g' | sh\n" fake_dir) ;
+    (Printf.sprintf
+       {|while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) shift 2 ;;
+    -fN) exit 0 ;;
+    -O) exit 0 ;;
+    *@*) shift; break ;;
+    *) shift ;;
+  esac
+done
+exec sh -c "$(echo "$*" | sed 's|/var/lib/ageism|%s|g')"
+|}
+       fake_dir ) ;
   Unix.putenv "AGEISM_LOG" (dir ^ "/age.log") ;
   with_path ~dir
   @@ fun () ->

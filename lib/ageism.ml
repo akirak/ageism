@@ -20,8 +20,12 @@ type status = Success | Failed of string list
 
 let target_directory = "/var/lib/ageism"
 
-(* A deployable host with an open shell connection. *)
-type connection = {conn_name: string; conn_dir: string; conn_shell: Shell.t}
+(* A deployable host. Local targets get an interactive privileged shell;
+   remote targets are reached through a single multiplexed SSH connection
+   whose control socket is [sock]. *)
+type connection = {conn_name: string; conn_dir: string; conn_kind: kind}
+
+and kind = Local of Shell.t | Ssh of {sock: string; host: string}
 
 let shell_hostname sh =
   match
@@ -34,12 +38,45 @@ let elevation_command = function
   | Sudo -> ["sudo"; "sh"]
   | Run0 -> ["run0"; "sh"]
 
+let rmtree ~env dir =
+  try Path.rmtree ~missing_ok:true Path.(Stdenv.fs env / dir) with _ -> ()
+
+(* [ssh_args ~sock host cmd] is the argv for running [cmd] on [host] as a new
+   session multiplexed over the master connection at [sock]. *)
+let ssh_args ~sock host cmd =
+  [ "ssh"
+  ; "-o"
+  ; "ControlMaster=auto"
+  ; "-o"
+  ; "ControlPath=" ^ sock
+  ; "root@" ^ host
+  ; cmd ]
+
 let connect ~env ~sw (config : _ Path.t config) (target : _ Path.t target) =
   match target with
   | Remote {hostName} ->
       traceln "Connecting to %s" hostName ;
-      let conn_shell = Shell.spawn ~env ~sw ["ssh"; "root@" ^ hostName] in
-      {conn_name= hostName; conn_dir= target_directory; conn_shell}
+      (* Spawn a multiplexing master in the background. It authenticates and
+         exits on failure before forking, so connection problems are raised
+         here. ControlPersist ensures the master goes away even if we are
+         killed before disconnecting. *)
+      let sock_dir = Filename.temp_dir "ageism" "ssh" in
+      let sock = Filename.concat sock_dir "ctl" in
+      ( try
+          Process.run (Stdenv.process_mgr env)
+            [ "ssh"
+            ; "-o"
+            ; "ControlMaster=yes"
+            ; "-o"
+            ; "ControlPath=" ^ sock
+            ; "-o"
+            ; "ControlPersist=60"
+            ; "-fN"
+            ; "root@" ^ hostName ]
+        with exn -> rmtree ~env sock_dir ; raise exn ) ;
+      { conn_name= hostName
+      ; conn_dir= target_directory
+      ; conn_kind= Ssh {sock; host= hostName} }
   | Localhost {installDir; hostName} ->
       let conn_shell =
         Shell.spawn ~env ~sw (elevation_command config.elevationStrategy)
@@ -54,14 +91,24 @@ let connect ~env ~sw (config : _ Path.t config) (target : _ Path.t target) =
         | Some dir -> Path.native_exn dir
         | None -> target_directory
       in
-      {conn_name; conn_dir; conn_shell}
+      {conn_name; conn_dir; conn_kind= Local conn_shell}
+
+(* Run [cmd] on the target, returning its standard output as a list of lines.
+   Raises if the command fails. *)
+let run_command ~env conn cmd =
+  match conn.conn_kind with
+  | Local shell -> Shell.run_exn shell cmd
+  | Ssh {sock; host} ->
+      Process.parse_out (Stdenv.process_mgr env) Buf_read.lines
+        (ssh_args ~sock host cmd)
+      |> List.of_seq
 
 (* Sums of the secret files already present on the target. *)
-let deployed_names conn =
+let deployed_names ~env conn =
   ignore
-    (Shell.run_exn conn.conn_shell
+    (run_command ~env conn
        ("mkdir -m 600 -p -- " ^ Filename.quote conn.conn_dir) ) ;
-  Shell.run_exn conn.conn_shell ("ls -1A -- " ^ Filename.quote conn.conn_dir)
+  run_command ~env conn ("ls -1A -- " ^ Filename.quote conn.conn_dir)
   |> List.filter_map Secrets.sum_of_name
 
 let recipient_file_for config host_name =
@@ -69,18 +116,29 @@ let recipient_file_for config host_name =
   | RecipientFile file -> file
   | RecipientDir dir -> Path.(dir / (host_name ^ ".txt"))
 
-(* Write [data] to [conn_dir]/[name] on the target. The data is sent
-   base64-encoded in a here-document so that binary content never has to
-   appear on the command line. *)
-let upload conn ~name ~data =
-  ignore
-    (Shell.run_exn conn.conn_shell
-       (Printf.sprintf
-          "umask 077 && base64 --decode > %s <<'__AGEISM_DATA__'\n\
-           %s\n\
-           __AGEISM_DATA__"
-          (Filename.quote (conn.conn_dir ^ "/" ^ name))
-          (Secrets.base64 data) ) )
+(* Write [data] to [conn_dir]/[name] on the target with mode 0600. For a
+   remote host the raw bytes are streamed to [cat] over the multiplexed SSH
+   connection; on localhost the data is staged in a temporary file that the
+   elevated shell copies into place. *)
+let upload ~env conn ~name ~data =
+  let dest = conn.conn_dir ^ "/" ^ name in
+  match conn.conn_kind with
+  | Ssh {sock; host} ->
+      Process.run (Stdenv.process_mgr env) ~stdin:(Flow.string_source data)
+        (ssh_args ~sock host ("umask 077 && cat > " ^ Filename.quote dest))
+  | Local shell ->
+      let tmp_path =
+        Path.(Stdenv.fs env / Filename.temp_file "ageism" ".age")
+      in
+      Fun.protect
+        ~finally:(fun () -> Path.unlink ~missing_ok:true tmp_path)
+        (fun () ->
+          Path.save ~create:(`Or_truncate 0o600) tmp_path data ;
+          ignore
+            (Shell.run_exn shell
+               (Printf.sprintf "umask 077 && cat -- %s > %s"
+                  (Filename.quote (Path.native_exn tmp_path))
+                  (Filename.quote dest) ) ) )
 
 (* Write [indexOutDir]/[hostName].json: an object mapping each source
    basename (without the .age suffix) to the output basename
@@ -117,9 +175,22 @@ type 'a plan =
   ; plan_pending: (string * string) list
   ; plan_secrets: (string * 'a Path.t) list }
 
+(* Close the target's connection: exit the interactive shell for localhost,
+   or ask the SSH multiplexing master to exit and remove its socket
+   directory. *)
+let disconnect ~env conn =
+  match conn.conn_kind with
+  | Local shell -> Shell.close shell
+  | Ssh {sock; host} ->
+      ( try
+          Process.run (Stdenv.process_mgr env)
+            ["ssh"; "-o"; "ControlPath=" ^ sock; "-O"; "exit"; "root@" ^ host]
+        with _ -> () ) ;
+      rmtree ~env (Filename.dirname sock)
+
 (* Decryption phase: find the secrets missing on [conn] and decrypt them. *)
 let prepare_target ~env ~cache ~secrets_root conn =
-  let deployed = deployed_names conn in
+  let deployed = deployed_names ~env conn in
   let secrets = Secrets.list ~root:secrets_root conn.conn_name in
   let missing = Secrets.select_missing deployed secrets in
   traceln "%s: %d/%d secret(s) missing" conn.conn_name (List.length missing)
@@ -140,7 +211,7 @@ let deploy_target ~env ~config plan =
     (fun (sum, plaintext) ->
       let ciphertext = Secrets.encrypt ~env ~recipient_file plaintext in
       let name = Secrets.sum_name sum in
-      upload conn ~name ~data:ciphertext ;
+      upload ~env conn ~name ~data:ciphertext ;
       traceln "%s: installed %s" conn.conn_name name )
     plan.plan_pending ;
   save_index ~config conn plan.plan_secrets
@@ -158,8 +229,7 @@ let deploy ~env config targets =
   @@ fun sw ->
   let conns = ref [] in
   Fun.protect
-    ~finally:(fun () ->
-      List.iter (fun conn -> Shell.close conn.conn_shell) !conns )
+    ~finally:(fun () -> List.iter (disconnect ~env) !conns)
     (fun () ->
       let cache = Hashtbl.create 8 in
       (* Phase 1: connect to every target and decrypt its missing secrets. A

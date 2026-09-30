@@ -33,8 +33,6 @@ let run_capture ~env ~input args =
 
 let sha256sum data = Digestif.SHA256.(digest_string data |> to_hex)
 
-let base64 data = Base64.encode_exn data
-
 (* Pairs of (sum, path) for each *.age file under [root]/[host_name], where
    sum is the sha256 of the dereferenced (symlink-followed) contents. *)
 let list ~root host_name =

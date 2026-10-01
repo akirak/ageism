@@ -1,5 +1,24 @@
 open Cmdliner
 
+let show_config (config : string Ageism.config) =
+  let open Ageism in
+  let show_opt = function None -> "<none>" | Some s -> s in
+  let recipient =
+    match config.recipient with
+    | RecipientFile file -> "file " ^ file
+    | RecipientDir dir -> "directory " ^ dir
+  in
+  let elevation =
+    match config.elevationStrategy with Sudo -> "sudo" | Run0 -> "run0"
+  in
+  String.concat "\n"
+    [ "Configuration:"
+    ; "  indexOutDir: " ^ show_opt config.indexOutDir
+    ; "  secretsRoot: " ^ show_opt config.secretsRoot
+    ; "  recipient: " ^ recipient
+    ; "  elevationStrategy: " ^ elevation
+    ; "  ageExe: " ^ config.ageExe ]
+
 let main ~env (config : string Ageism.config)
     (targets : string Ageism.target list) =
   let open Ageism in
@@ -19,6 +38,7 @@ let main ~env (config : string Ageism.config)
     ; elevationStrategy= config.elevationStrategy
     ; ageExe= config.ageExe }
   in
+  Eio.traceln "%s" (show_config config) ;
   match Ageism.(deploy ~env eio_config (List.map toEioTarget targets)) with
   | Ageism.Success -> Cmd.Exit.ok
   | Ageism.Failed _ -> Cmd.Exit.some_error

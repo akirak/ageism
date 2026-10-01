@@ -1,5 +1,5 @@
 (library
  (name ageism)
- (libraries digestif eio eio.unix yojson ppx_yojson_conv_lib)
+ (libraries digestif eio eio.unix fmt yojson ppx_yojson_conv_lib)
  (preprocess
   (pps ppx_yojson_conv)))

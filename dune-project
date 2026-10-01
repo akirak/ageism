@@ -11,6 +11,7 @@
    cmdliner
    digestif
    eio
+   fmt
    eio_main
    yojson
    ppx_yojson_conv

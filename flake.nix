@@ -60,6 +60,7 @@
               ppx_yojson_conv
               cmdliner
               digestif
+              fmt
             ];
 
             checkInputs = with ocamlPackages; [

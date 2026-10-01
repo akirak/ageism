@@ -189,13 +189,35 @@ let disconnect ~env conn =
         with _ -> () ) ;
       rmtree ~env (Filename.dirname sock)
 
+(* Pretty-print a table of the secrets' statuses: a ballot box with check (☑)
+   if the secret is already deployed on the target, or a ballot box (☐) if it
+   is missing and has to be uploaded. *)
+let pp_secret_statuses ~deployed ppf secrets =
+  let rows =
+    List.map
+      (fun (sum, path) ->
+        ( Filename.chop_suffix
+            (Filename.basename (Path.native_exn path))
+            ".age"
+        , List.mem sum deployed ) )
+      secrets
+  in
+  let width =
+    List.fold_left (fun w (name, _) -> max w (String.length name)) 0 rows
+  in
+  let pp_row ppf (name, is_deployed) =
+    Fmt.pf ppf "  %-*s %s" width name (if is_deployed then "☑" else "☐")
+  in
+  Fmt.(vbox (list ~sep:cut pp_row)) ppf rows
+
 (* Decryption phase: find the secrets missing on [conn] and decrypt them. *)
 let prepare_target ~env ~cache ~config ~secrets_root conn =
   let deployed = deployed_names ~env conn in
   let secrets = Secrets.list ~root:secrets_root conn.conn_name in
   let missing = Secrets.select_missing deployed secrets in
-  traceln "%s: %d/%d secret(s) missing" conn.conn_name (List.length missing)
-    (List.length secrets) ;
+  traceln "%s: %d/%d secret(s) to deploy" conn.conn_name
+    (List.length missing) (List.length secrets) ;
+  traceln "%a" (pp_secret_statuses ~deployed) secrets ;
   let pending =
     List.map
       (fun (sum, path) ->

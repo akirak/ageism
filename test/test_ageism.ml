@@ -68,6 +68,7 @@ let e2e_config ~env ~dir =
   Ageism.
     { indexOutDir= None
     ; recipient= RecipientFile (fs_path ~env (dir ^ "/recip.txt"))
+    ; identityFile= fs_path ~env (dir ^ "/identity.txt")
     ; secretsRoot= Some (fs_path ~env (dir ^ "/secrets"))
     ; elevationStrategy= Sudo
     ; ageExe= "age" }
@@ -143,15 +144,17 @@ let test_decrypt_caches env () =
   (* Two files with identical contents share a sum. *)
   write_file (dir ^ "/a.age") "CIPHER:first\n" ;
   write_file (dir ^ "/b.age") "CIPHER:first\n" ;
+  write_file (dir ^ "/identity.txt") "AGE-SECRET-KEY-1FAKE\n" ;
   let cache = Hashtbl.create 4 in
   let sum = Secrets.sha256sum "CIPHER:first\n" in
+  let identity = fs_path ~env (dir ^ "/identity.txt") in
   let plaintext =
-    Secrets.decrypt ~env ~cache ~age:"age" ~sum
+    Secrets.decrypt ~env ~cache ~age:"age" ~identity ~sum
       (fs_path ~env (dir ^ "/a.age"))
   in
   check string "decrypted" "first\n" plaintext ;
   let again =
-    Secrets.decrypt ~env ~cache ~age:"age" ~sum
+    Secrets.decrypt ~env ~cache ~age:"age" ~identity ~sum
       (fs_path ~env (dir ^ "/b.age"))
   in
   check string "cached" "first\n" again ;

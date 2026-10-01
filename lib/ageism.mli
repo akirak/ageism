@@ -10,6 +10,7 @@ type 'path recipient = RecipientFile of 'path | RecipientDir of 'path
 type 'path config =
   { indexOutDir: 'path option
   ; recipient: 'path recipient
+  ; identityFile: 'path
   ; secretsRoot: 'path option
   ; elevationStrategy: elevation
   ; ageExe: string }

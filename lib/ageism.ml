@@ -11,6 +11,7 @@ type elevation = Sudo | Run0
 type 'path config =
   { indexOutDir: 'path option
   ; recipient: 'path recipient
+  ; identityFile: 'path
   ; secretsRoot: 'path option
   ; elevationStrategy: elevation
   ; ageExe: string }
@@ -218,7 +219,9 @@ let prepare_target ~env ~cache ~config ~secrets_root conn =
   let pending =
     List.map
       (fun (sum, path) ->
-        (sum, Secrets.decrypt ~env ~cache ~age:config.ageExe ~sum path) )
+        ( sum
+        , Secrets.decrypt ~env ~cache ~age:config.ageExe
+            ~identity:config.identityFile ~sum path ) )
       missing
   in
   {plan_conn= conn; plan_pending= pending; plan_secrets= secrets}

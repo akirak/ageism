@@ -3,7 +3,7 @@ open Cmdliner
 let main ~env (config : string Ageism.config)
     (targets : string Ageism.target list) =
   let open Ageism in
-  let toEioPath = fun str -> Eio.Path.(Eio.Stdenv.cwd env / str) in
+  let toEioPath = fun str -> Eio.Path.(Eio.Stdenv.fs env / str) in
   let toEioTarget = function
     | Localhost {installDir; hostName} ->
         Localhost {installDir= Option.map toEioPath installDir; hostName}

@@ -16,7 +16,8 @@ let main ~env (config : string Ageism.config)
         ( match config.recipient with
         | RecipientFile fileStr -> RecipientFile (toEioPath fileStr)
         | RecipientDir dirStr -> RecipientDir (toEioPath dirStr) )
-    ; elevationStrategy= config.elevationStrategy }
+    ; elevationStrategy= config.elevationStrategy
+    ; ageExe= config.ageExe }
   in
   match Ageism.(deploy ~env eio_config (List.map toEioTarget targets)) with
   | Ageism.Success -> Cmd.Exit.ok

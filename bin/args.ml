@@ -49,6 +49,11 @@ let hosts_a =
   let doc = "Host to which secrets are deployed." in
   Arg.(value & pos_all string [] & info [] ~docv:"HOST" ~doc)
 
+let age_exe_a =
+  let doc = "Use $(docv) as the age executable." in
+  let env = Cmd.Env.info "AGEISM_AGE" ~doc in
+  Arg.(value & opt string "age" & info ["age"] ~docv:"EXE" ~doc ~env)
+
 let elevation_a =
   let doc = "Privilege elevation strategy." in
   let env = Cmd.Env.info "AGEISM_ELEVATION" ~doc in
@@ -60,10 +65,11 @@ let elevation_a =
 let config_t =
   let open Ageism in
   let make_config indexOutDir recipientFile recipientDir secretsRoot
-      elevationStrategy =
+      elevationStrategy ageExe =
     { indexOutDir
     ; secretsRoot
     ; elevationStrategy
+    ; ageExe
     ; recipient=
         ( match recipientFile with
         | Some file -> RecipientFile file
@@ -75,7 +81,7 @@ let config_t =
   in
   Term.(
     const make_config $ index_out_dir $ recipient_file $ recipient_dir
-    $ secrets_root_a $ elevation_a )
+    $ secrets_root_a $ elevation_a $ age_exe_a )
 
 let targets_t =
   let open Ageism in

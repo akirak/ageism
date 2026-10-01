@@ -69,7 +69,8 @@ let e2e_config ~env ~dir =
     { indexOutDir= None
     ; recipient= RecipientFile (fs_path ~env (dir ^ "/recip.txt"))
     ; secretsRoot= Some (fs_path ~env (dir ^ "/secrets"))
-    ; elevationStrategy= Sudo }
+    ; elevationStrategy= Sudo
+    ; ageExe= "age" }
 
 let status_str = function
   | Ageism.Success -> "ok"
@@ -145,11 +146,13 @@ let test_decrypt_caches env () =
   let cache = Hashtbl.create 4 in
   let sum = Secrets.sha256sum "CIPHER:first\n" in
   let plaintext =
-    Secrets.decrypt ~env ~cache ~sum (fs_path ~env (dir ^ "/a.age"))
+    Secrets.decrypt ~env ~cache ~age:"age" ~sum
+      (fs_path ~env (dir ^ "/a.age"))
   in
   check string "decrypted" "first\n" plaintext ;
   let again =
-    Secrets.decrypt ~env ~cache ~sum (fs_path ~env (dir ^ "/b.age"))
+    Secrets.decrypt ~env ~cache ~age:"age" ~sum
+      (fs_path ~env (dir ^ "/b.age"))
   in
   check string "cached" "first\n" again ;
   check int "age ran only once" 1
@@ -249,6 +252,38 @@ let test_deploy_localhost env () =
   check_ok "redeploy succeeds" (Ageism.deploy ~env config [target]) ;
   check int "no further decrypts" 1
     (count_matching "--decrypt" (dir ^ "/age.log"))
+
+let test_deploy_age_exe env () =
+  with_temp_dir
+  @@ fun dir ->
+  mkdir_p (dir ^ "/repo") ;
+  mkdir_p (dir ^ "/secrets/testhost") ;
+  mkdir_p (dir ^ "/dest") ;
+  write_file (dir ^ "/repo/a.age") "CIPHER:aaa\n" ;
+  Unix.symlink "../../repo/a.age" (dir ^ "/secrets/testhost/a.age") ;
+  write_file (dir ^ "/recip.txt") "age1fake\n" ;
+  make_script ~dir "sudo" fake_sudo ;
+  (* Referenced by absolute path, so it does not need to be on PATH. *)
+  make_script ~dir "fake-age" fake_age ;
+  Unix.putenv "AGEISM_LOG" (dir ^ "/age.log") ;
+  with_path ~dir
+  @@ fun () ->
+  let config =
+    {(e2e_config ~env ~dir) with Ageism.ageExe= dir ^ "/fake-age"}
+  in
+  let target =
+    Ageism.Localhost
+      { installDir= Some (fs_path ~env (dir ^ "/dest"))
+      ; hostName= Some "testhost" }
+  in
+  check_ok "deploy succeeds" (Ageism.deploy ~env config [target]) ;
+  let sum = Secrets.sha256sum "CIPHER:aaa\n" in
+  check string "secret installed via overridden age" "REKEYED:aaa\n"
+    (read_file (dir ^ "/dest/sha256-" ^ sum)) ;
+  check int "decrypt called once" 1
+    (count_matching "--decrypt" (dir ^ "/age.log")) ;
+  check int "encrypt called once" 1
+    (count_matching "--encrypt" (dir ^ "/age.log"))
 
 let test_deploy_resolves_hostname env () =
   with_temp_dir
@@ -534,6 +569,7 @@ let () =
         ; test_case "close" `Quick (with_env test_shell_close) ] )
     ; ( "deploy"
       , [ test_case "localhost" `Quick (with_env test_deploy_localhost)
+        ; test_case "age exe override" `Quick (with_env test_deploy_age_exe)
         ; test_case "resolves hostname" `Quick
             (with_env test_deploy_resolves_hostname)
         ; test_case "shared secret decrypted once" `Quick

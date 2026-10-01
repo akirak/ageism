@@ -11,7 +11,8 @@ type 'path config =
   { indexOutDir: 'path option
   ; recipient: 'path recipient
   ; secretsRoot: 'path option
-  ; elevationStrategy: elevation }
+  ; elevationStrategy: elevation
+  ; ageExe: string }
 
 (** Result of {!deploy}. [Failed names] lists the targets whose deployment
     failed; other targets were still deployed. *)

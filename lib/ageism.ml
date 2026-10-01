@@ -12,7 +12,8 @@ type 'path config =
   { indexOutDir: 'path option
   ; recipient: 'path recipient
   ; secretsRoot: 'path option
-  ; elevationStrategy: elevation }
+  ; elevationStrategy: elevation
+  ; ageExe: string }
 
 (* Result of a deployment: the names of the targets that failed, or [Success]
    if none did. *)
@@ -189,7 +190,7 @@ let disconnect ~env conn =
       rmtree ~env (Filename.dirname sock)
 
 (* Decryption phase: find the secrets missing on [conn] and decrypt them. *)
-let prepare_target ~env ~cache ~secrets_root conn =
+let prepare_target ~env ~cache ~config ~secrets_root conn =
   let deployed = deployed_names ~env conn in
   let secrets = Secrets.list ~root:secrets_root conn.conn_name in
   let missing = Secrets.select_missing deployed secrets in
@@ -197,7 +198,8 @@ let prepare_target ~env ~cache ~secrets_root conn =
     (List.length secrets) ;
   let pending =
     List.map
-      (fun (sum, path) -> (sum, Secrets.decrypt ~env ~cache ~sum path))
+      (fun (sum, path) ->
+        (sum, Secrets.decrypt ~env ~cache ~age:config.ageExe ~sum path) )
       missing
   in
   {plan_conn= conn; plan_pending= pending; plan_secrets= secrets}
@@ -209,7 +211,9 @@ let deploy_target ~env ~config plan =
   let recipient_file = recipient_file_for config conn.conn_name in
   List.iter
     (fun (sum, plaintext) ->
-      let ciphertext = Secrets.encrypt ~env ~recipient_file plaintext in
+      let ciphertext =
+        Secrets.encrypt ~env ~age:config.ageExe ~recipient_file plaintext
+      in
       let name = Secrets.sum_name sum in
       upload ~env conn ~name ~data:ciphertext ;
       traceln "%s: installed %s" conn.conn_name name )
@@ -240,7 +244,8 @@ let deploy ~env config targets =
             try
               let conn = connect ~env ~sw config target in
               conns := conn :: !conns ;
-              Either.Left (prepare_target ~env ~cache ~secrets_root conn)
+              Either.Left
+                (prepare_target ~env ~cache ~config ~secrets_root conn)
             with
             | Eio.Cancel.Cancelled _ as exn -> raise exn
             | exn ->

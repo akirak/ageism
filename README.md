@@ -205,3 +205,7 @@ When `--index-out-dir` is specified, `ageism` outputs a JSON file for each targe
   "ssh-host-key": "sha256-ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb.age"
 }
 ```
+
+## Inspirations
+
+- [agenix-rekey](https://github.com/oddlama/agenix-rekey)

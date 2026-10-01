@@ -202,11 +202,8 @@ let pp_secret_statuses ~deployed ppf secrets =
         , List.mem sum deployed ) )
       secrets
   in
-  let width =
-    List.fold_left (fun w (name, _) -> max w (String.length name)) 0 rows
-  in
   let pp_row ppf (name, is_deployed) =
-    Fmt.pf ppf "  %-*s %s" width name (if is_deployed then "☑" else "☐")
+    Fmt.pf ppf "  %s %s" (if is_deployed then "☑" else "☐") name
   in
   Fmt.(vbox (list ~sep:cut pp_row)) ppf rows
 

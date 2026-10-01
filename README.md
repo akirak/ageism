@@ -21,7 +21,7 @@ Ageism is an `age` secret deployment tool for NixOS.
 ## How It Works
 
 1. **Discovery & Hashing**:
-   `ageism` scans `--secrets-dir/<host>` for `*.age` files (following symlinks) and computes the SHA-256 hash of each dereferenced source file.
+   `ageism` scans `--secrets-root/<host>` for `*.age` files (following symlinks) and computes the SHA-256 hash of each dereferenced source file.
 2. **Inspection**:
    It queries the target's destination directory (`/var/lib/ageism` by default, or `--install-dir`) to list already deployed secrets (identified by `sha256-`-prefixed 64-character hex SHA-256 hashes).
 3. **Decryption Phase**:
@@ -102,7 +102,7 @@ If no `HOST` arguments are provided, `ageism` defaults to deploying to `localhos
 
 | Option | Description |
 |---|---|
-| `--secrets-dir=DIR` | **Required.** Root directory containing per-host secrets directories. |
+| `--secrets-root=DIR` | **Required.** Root directory containing per-host secrets directories. |
 | `--recipient-file=FILE` | Path to an age recipient file (public key) to use for encryption. |
 | `--recipient-dir=DIR` | Directory containing recipient files named `<HOSTNAME>.txt`. |
 | `--index-out-dir=DIR` | Output directory where `<HOSTNAME>.json` secret index maps will be written. |
@@ -119,7 +119,7 @@ Every option can also be configured via an environment variable. Command line op
 
 | Environment variable | Option |
 |---|---|
-| `AGEISM_SECRETS_DIR` | `--secrets-dir` |
+| `AGEISM_SECRETS_ROOT` | `--secrets-root` |
 | `AGEISM_RECIPIENT_FILE` | `--recipient-file` |
 | `AGEISM_RECIPIENT_DIR` | `--recipient-dir` |
 | `AGEISM_INDEX_OUT_DIR` | `--index-out-dir` |
@@ -156,7 +156,7 @@ Deploy secrets to `host1` and `host2` over SSH:
 
 ```bash
 ageism \
-  --secrets-dir=./secrets \
+  --secrets-root=./secrets \
   --recipient-dir=./recipients \
   --index-out-dir=./indices \
   host1 host2
@@ -168,7 +168,7 @@ Deploy secrets to the local machine (`/var/lib/ageism`) using `sudo`:
 
 ```bash
 ageism \
-  --secrets-dir=./secrets \
+  --secrets-root=./secrets \
   --recipient-file=./recipients/localhost.txt \
   --index-out-dir=./indices
 ```
@@ -178,7 +178,7 @@ Using `systemd-run0` for elevation:
 ```bash
 ageism \
   --elevation=run0 \
-  --secrets-dir=./secrets \
+  --secrets-root=./secrets \
   --recipient-file=./recipients/localhost.txt
 ```
 
@@ -188,7 +188,7 @@ When installing NixOS to a mounted root at `/mnt`:
 
 ```bash
 ageism \
-  --secrets-dir=./secrets \
+  --secrets-root=./secrets \
   --recipient-file=./recipients/new-machine.txt \
   --install-dir=/mnt/var/lib/ageism
 ```

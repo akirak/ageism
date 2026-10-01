@@ -37,13 +37,13 @@ let install_dir_a =
     & opt (some string) None
     & info ["install-dir"] ~docv:"DIR" ~doc ~env )
 
-let secrets_dir_a =
+let secrets_root_a =
   let doc = "Root of the secrets for all hosts." in
-  let env = Cmd.Env.info "AGEISM_SECRETS_DIR" ~doc in
+  let env = Cmd.Env.info "AGEISM_SECRETS_ROOT" ~doc in
   Arg.(
     value
     & opt (some string) None
-    & info ["secrets-dir"] ~docv:"DIR" ~doc ~env )
+    & info ["secrets-root"] ~docv:"DIR" ~doc ~env )
 
 let hosts_a =
   let doc = "Host to which secrets are deployed." in
@@ -75,7 +75,7 @@ let config_t =
   in
   Term.(
     const make_config $ index_out_dir $ recipient_file $ recipient_dir
-    $ secrets_dir_a $ elevation_a )
+    $ secrets_root_a $ elevation_a )
 
 let targets_t =
   let open Ageism in

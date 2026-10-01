@@ -2,33 +2,48 @@ open Cmdliner
 
 let index_out_dir =
   let doc = "Write the index file to $(docv)/HOSTNAME.json." in
-  Arg.(
-    value & opt (some string) None & info ["index-out-dir"] ~docv:"DIR" ~doc )
-
-let recipient_file =
-  let doc = "Use the age recipient file at $(docv)." in
+  let env = Cmd.Env.info "AGEISM_INDEX_OUT_DIR" ~doc in
   Arg.(
     value
     & opt (some string) None
-    & info ["recipient-file"] ~docv:"FILE" ~doc )
+    & info ["index-out-dir"] ~docv:"DIR" ~doc ~env )
+
+let recipient_file =
+  let doc = "Use the age recipient file at $(docv)." in
+  let env = Cmd.Env.info "AGEISM_RECIPIENT_FILE" ~doc in
+  Arg.(
+    value
+    & opt (some string) None
+    & info ["recipient-file"] ~docv:"FILE" ~doc ~env )
 
 let recipient_dir =
   let doc =
     "Use the age recipient file (public key) at $(docv)/HOSTNAME.txt."
   in
+  let env = Cmd.Env.info "AGEISM_RECIPIENT_DIR" ~doc in
   Arg.(
-    value & opt (some string) None & info ["recipient-dir"] ~docv:"DIR" ~doc )
+    value
+    & opt (some string) None
+    & info ["recipient-dir"] ~docv:"DIR" ~doc ~env )
 
 let install_dir_a =
   let doc =
     "Transfer the secrets to $(docv). This is intended for use in \
      nixos-install."
   in
-  Arg.(value & opt (some string) None & info ["install-dir"] ~docv:"DIR" ~doc)
+  let env = Cmd.Env.info "AGEISM_INSTALL_DIR" ~doc in
+  Arg.(
+    value
+    & opt (some string) None
+    & info ["install-dir"] ~docv:"DIR" ~doc ~env )
 
 let secrets_dir_a =
   let doc = "Root of the secrets for all hosts." in
-  Arg.(value & opt (some string) None & info ["secrets-dir"] ~docv:"DIR" ~doc)
+  let env = Cmd.Env.info "AGEISM_SECRETS_DIR" ~doc in
+  Arg.(
+    value
+    & opt (some string) None
+    & info ["secrets-dir"] ~docv:"DIR" ~doc ~env )
 
 let hosts_a =
   let doc = "Host to which secrets are deployed." in
@@ -36,10 +51,11 @@ let hosts_a =
 
 let elevation_a =
   let doc = "Privilege elevation strategy." in
+  let env = Cmd.Env.info "AGEISM_ELEVATION" ~doc in
   Arg.(
     value
     & opt (enum [("sudo", Ageism.Sudo); ("run0", Ageism.Run0)]) Ageism.Sudo
-    & info ["elevation"] ~docv:"STRATEGY" ~doc )
+    & info ["elevation"] ~docv:"STRATEGY" ~doc ~env )
 
 let config_t =
   let open Ageism in

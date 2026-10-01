@@ -113,6 +113,19 @@ If no `HOST` arguments are provided, `ageism` defaults to deploying to `localhos
 
 > **Note:** Either `--recipient-file` or `--recipient-dir` must be specified.
 
+### Environment Variables
+
+Every option can also be configured via an environment variable. Command line options take precedence; environment variables are used only as a fallback.
+
+| Environment variable | Option |
+|---|---|
+| `AGEISM_SECRETS_DIR` | `--secrets-dir` |
+| `AGEISM_RECIPIENT_FILE` | `--recipient-file` |
+| `AGEISM_RECIPIENT_DIR` | `--recipient-dir` |
+| `AGEISM_INDEX_OUT_DIR` | `--index-out-dir` |
+| `AGEISM_INSTALL_DIR` | `--install-dir` |
+| `AGEISM_ELEVATION` | `--elevation` |
+
 ---
 
 ## Examples

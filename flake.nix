@@ -65,6 +65,8 @@
             checkInputs = with ocamlPackages; [
               alcotest
             ];
+
+            meta.mainProgram = "ageism";
           };
         }
       );

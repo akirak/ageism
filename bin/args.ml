@@ -8,14 +8,6 @@ let index_out_dir =
     & opt (some string) None
     & info ["index-out-dir"] ~docv:"DIR" ~doc ~env )
 
-let identity_file =
-  let doc = "Use the age identity file at $(docv) for decryption." in
-  let env = Cmd.Env.info "AGEISM_IDENTITY_FILE" ~doc in
-  Arg.(
-    required
-    & opt (some string) None
-    & info ["i"; "identity"] ~docv:"FILE" ~doc ~env )
-
 let recipient_file =
   let doc = "Use the age recipient file at $(docv)." in
   let env = Cmd.Env.info "AGEISM_RECIPIENT_FILE" ~doc in
@@ -72,10 +64,9 @@ let elevation_a =
 
 let config_t =
   let open Ageism in
-  let make_config indexOutDir identityFile recipientFile recipientDir
-      secretsRoot elevationStrategy ageExe =
+  let make_config indexOutDir recipientFile recipientDir secretsRoot
+      elevationStrategy ageExe =
     { indexOutDir
-    ; identityFile
     ; secretsRoot
     ; elevationStrategy
     ; ageExe
@@ -89,8 +80,8 @@ let config_t =
           end ) }
   in
   Term.(
-    const make_config $ index_out_dir $ identity_file $ recipient_file
-    $ recipient_dir $ secrets_root_a $ elevation_a $ age_exe_a )
+    const make_config $ index_out_dir $ recipient_file $ recipient_dir
+    $ secrets_root_a $ elevation_a $ age_exe_a )
 
 let targets_t =
   let open Ageism in

@@ -11,7 +11,6 @@ type elevation = Sudo | Run0
 type 'path config =
   { indexOutDir: 'path option
   ; recipient: 'path recipient
-  ; identityFile: 'path
   ; secretsRoot: 'path option
   ; elevationStrategy: elevation
   ; ageExe: string }
@@ -105,13 +104,12 @@ let run_command ~env conn cmd =
         (ssh_args ~sock host cmd)
       |> List.of_seq
 
-(* Sums of the secret files already present on the target. *)
-let deployed_names ~env conn =
+(* Names of the files already present on the target. *)
+let deployed_entries ~env conn =
   ignore
     (run_command ~env conn
        ("mkdir -m 600 -p -- " ^ Filename.quote conn.conn_dir) ) ;
   run_command ~env conn ("ls -1A -- " ^ Filename.quote conn.conn_dir)
-  |> List.filter_map Secrets.sum_of_name
 
 let recipient_file_for config host_name =
   match config.recipient with
@@ -143,9 +141,9 @@ let upload ~env conn ~name ~data =
                   (Filename.quote dest) ) ) )
 
 (* Write [indexOutDir]/[hostName].json: an object mapping each source
-   basename (without the .age suffix) to the output basename
-   (sha256-<sha256>.age). *)
-let save_index ~config conn secrets =
+   basename (without the .age suffix) to the deployed basename
+   (sha256-<sha256>.<id>.age). *)
+let save_index ~config conn names =
   match config.indexOutDir with
   | None -> ()
   | Some dir ->
@@ -153,11 +151,8 @@ let save_index ~config conn secrets =
       let index =
         `Assoc
           (List.map
-             (fun (sum, path) ->
-               let base = Filename.basename (Path.native_exn path) in
-               ( Filename.chop_suffix base ".age"
-               , [%yojson_of: string] (Secrets.sum_name sum ^ ".age") ) )
-             secrets )
+             (fun (base, name) -> (base, [%yojson_of: string] name))
+             names )
       in
       Path.mkdirs ~exists_ok:true ~perm:0o755 dir ;
       Path.save ~create:(`Or_truncate 0o600)
@@ -170,12 +165,14 @@ let target_name = function
   | Localhost {hostName= Some name; _} -> name
   | Localhost {hostName= None; _} -> "localhost"
 
-(* Everything needed to finish a target's deployment: the missing secrets
-   already decrypted, plus the full secret list for the index file. *)
-type 'a plan =
+(* Everything needed to finish a target's deployment: the decrypted host
+   identity and the missing secrets already decrypted, plus the name each
+   secret has on the target for the index file. *)
+type plan =
   { plan_conn: connection
+  ; plan_identity: (string * string) option
   ; plan_pending: (string * string) list
-  ; plan_secrets: (string * 'a Path.t) list }
+  ; plan_names: (string * string) list }
 
 (* Close the target's connection: exit the interactive shell for localhost,
    or ask the SSH multiplexing master to exit and remove its socket
@@ -208,39 +205,81 @@ let pp_secret_statuses ~deployed ppf secrets =
   in
   Fmt.(vbox (list ~sep:cut pp_row)) ppf rows
 
-(* Decryption phase: find the secrets missing on [conn] and decrypt them. *)
+(* Decryption phase: find the identity and the secrets missing on [conn] and
+   decrypt them. *)
 let prepare_target ~env ~cache ~config ~secrets_root conn =
-  let deployed = deployed_names ~env conn in
+  let entries = deployed_entries ~env conn in
+  let deployed =
+    List.filter_map
+      (fun name ->
+        Option.map (fun sum -> (sum, name)) (Secrets.sum_of_name name) )
+      entries
+  in
   let secrets = Secrets.list ~root:secrets_root conn.conn_name in
-  let missing = Secrets.select_missing deployed secrets in
+  let identity = Secrets.identity ~root:secrets_root conn.conn_name in
+  let id = Option.map (fun (sum, _) -> Secrets.id_of_sum sum) identity in
+  if id = None && secrets <> [] then
+    failwith
+      "secrets cannot be deployed without an identity.age file in the \
+       secrets directory" ;
+  let missing = Secrets.select_missing (List.map fst deployed) secrets in
   traceln "%s: %d/%d secret(s) to deploy" conn.conn_name
     (List.length missing) (List.length secrets) ;
-  traceln "%a" (pp_secret_statuses ~deployed) secrets ;
-  let pending =
+  traceln "%a" (pp_secret_statuses ~deployed:(List.map fst deployed)) secrets ;
+  (* The deployed name of [sum]: the name of the file already on the target,
+     or a new name carrying the host identity's ID. *)
+  let name_of sum =
+    match List.assoc_opt sum deployed with
+    | Some name -> name
+    | None -> Secrets.deployed_name ~id:(Option.get id) sum
+  in
+  let plan_identity =
+    match identity with
+    | Some (sum, path) ->
+        let name = Secrets.deployed_identity_name (Option.get id) in
+        if List.mem name entries then None
+        else
+          Some
+            (name, Secrets.decrypt ~env ~cache ~age:config.ageExe ~sum path)
+    | None -> None
+  in
+  let plan_pending =
     List.map
       (fun (sum, path) ->
-        ( sum
-        , Secrets.decrypt ~env ~cache ~age:config.ageExe
-            ~identity:config.identityFile ~sum path ) )
+        ( name_of sum
+        , Secrets.decrypt ~env ~cache ~age:config.ageExe ~sum path ) )
       missing
   in
-  {plan_conn= conn; plan_pending= pending; plan_secrets= secrets}
+  let plan_names =
+    List.map
+      (fun (sum, path) ->
+        ( Filename.chop_suffix
+            (Filename.basename (Path.native_exn path))
+            ".age"
+        , name_of sum ) )
+      secrets
+  in
+  {plan_conn= conn; plan_identity; plan_pending; plan_names}
 
-(* Deployment phase: re-encrypt the decrypted secrets for the target and
-   upload them over its shell. *)
+(* Deployment phase: upload the host identity, re-encrypt the decrypted
+   secrets for the target and upload them over its shell. *)
 let deploy_target ~env ~config plan =
   let conn = plan.plan_conn in
   let recipient_file = recipient_file_for config conn.conn_name in
+  Option.iter
+    (fun (name, plaintext) ->
+      upload ~env conn ~name ~data:plaintext ;
+      traceln "%s: installed %s" conn.conn_name name )
+    plan.plan_identity ;
   List.iter
-    (fun (sum, plaintext) ->
+    (fun (name, plaintext) ->
       let ciphertext =
         Secrets.encrypt ~env ~age:config.ageExe ~recipient_file plaintext
       in
-      let name = Secrets.sum_name sum in
       upload ~env conn ~name ~data:ciphertext ;
       traceln "%s: installed %s" conn.conn_name name )
     plan.plan_pending ;
-  save_index ~config conn plan.plan_secrets
+  save_index ~config conn plan.plan_names
 
 let deploy ~env config targets =
   let secrets_root =

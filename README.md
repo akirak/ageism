@@ -13,7 +13,8 @@ Ageism is an `age` secret deployment tool for NixOS.
 - **Deduplication & Decryption Caching**: Caches decrypted secrets by SHA-256 hash in memory during a deploy run; secrets shared across multiple hosts (e.g. via symlinks) are only decrypted once.
 - **Incremental Deployment**: Identifies secrets on the target by content hash; only missing or changed secrets are transferred.
 - **Secure Shell Transfer**: Uploads encrypted payloads to remote hosts over a single multiplexed SSH connection (checks and file transfers share the connection), and through a persistent elevated shell (`sudo` or `run0`) for localhost, with strict `0600` permissions.
-- **Index Generation**: Optionally generates JSON index files mapping secret basenames to their content hashes (`<name>.age -> sha256-<sha256>.age`) for NixOS consumption.
+- **Per-Host Identities**: Each host's directory may contain an encrypted `identity.age`; it is decrypted on the controller and installed on the target as `/var/lib/ageism/identity.<ID>` (root-only), where `ID` is the first 8 hex characters of the SHA-256 digest of the encrypted file. Identities already present are not re-transferred, so old identities remain available for secrets encrypted to them.
+- **Index Generation**: Optionally generates JSON index files mapping secret basenames to their deployed filenames (`<name>.age -> sha256-<sha256>.<ID>.age`) for NixOS consumption.
 - **NixOS Install Support**: Deploy directly into a mounted filesystem root via `--install-dir` during `nixos-install`.
 
 ---
@@ -21,17 +22,20 @@ Ageism is an `age` secret deployment tool for NixOS.
 ## How It Works
 
 1. **Discovery & Hashing**:
-   `ageism` scans `--secrets-root/<host>` for `*.age` files (following symlinks) and computes the SHA-256 hash of each dereferenced source file.
+   `ageism` scans `--secrets-root/<host>` for `*.age` files (following symlinks) and computes the SHA-256 hash of each dereferenced source file. The name `identity.age` is reserved for the host's encrypted identity and is never deployed as a secret.
 2. **Inspection**:
-   It queries the target's destination directory (`/var/lib/ageism` by default, or `--install-dir`) to list already deployed secrets (identified by `sha256-`-prefixed 64-character hex SHA-256 hashes).
+   It queries the target's destination directory (`/var/lib/ageism` by default, or `--install-dir`) to list already deployed secrets (identified by `sha256-`-prefixed names) and identities (`identity.<ID>`).
 3. **Decryption Phase**:
-   Any missing secrets are decrypted using local `age --decrypt`. Shared secrets across different target hosts are decrypted only once and held in an in-memory cache.
+   The host identity (if missing on the target) and any missing secrets are decrypted using local `age --decrypt`. Shared secrets across different target hosts are decrypted only once and held in an in-memory cache.
 4. **Encryption & Transfer Phase**:
    For each target host concurrently:
+   - The decrypted identity is written to `identity.<ID>` with `0600` file permissions, unless a file with the same ID already exists. `ID` is the first 8 hex characters of the SHA-256 digest of the *encrypted* `identity.age`.
    - Plaintexts are encrypted with the host's recipient key using `age --encrypt`.
-   - Re-encrypted ciphertexts are transferred and written to the destination directory under their `sha256-`-prefixed SHA-256 hash with `0600` file permissions.
+   - Re-encrypted ciphertexts are transferred and written to the destination directory as `sha256-<sha256>.<ID>.age` with `0600` file permissions.
 5. **Index Output**:
    If `--index-out-dir` is provided, a JSON file (`<index-out-dir>/<host>.json`) is created mapping secret names to their deployed filenames.
+
+At boot time the target scans its `identity.*` files and decrypts each `*.<ID>.age` secret with the matching identity.
 
 ---
 
@@ -141,9 +145,11 @@ secrets/
 ├── common/
 │   └── wifi-password.age
 ├── host1/
+│   ├── identity.age
 │   ├── wifi-password.age -> ../common/wifi-password.age
 │   └── ssh-host-key.age
 └── host2/
+    ├── identity.age
     ├── wifi-password.age -> ../common/wifi-password.age
     └── wireguard-key.age
 
@@ -151,6 +157,8 @@ recipients/
 ├── host1.txt
 └── host2.txt
 ```
+
+Each `identity.age` is the host's age identity (private key) encrypted like any other secret in the repository. A host with secrets but no `identity.age` cannot be deployed to.
 
 ### Deploy to Multiple Remote Hosts
 
@@ -197,12 +205,12 @@ ageism \
 
 ### Index File Format
 
-When `--index-out-dir` is specified, `ageism` outputs a JSON file for each target host mapping the secret base name to its stored hashed filename:
+When `--index-out-dir` is specified, `ageism` outputs a JSON file for each target host mapping the secret base name to its stored hashed filename, suffixed with the ID of the host identity that can decrypt it:
 
 ```json
 {
-  "wifi-password": "sha256-e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.age",
-  "ssh-host-key": "sha256-ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb.age"
+  "wifi-password": "sha256-e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.a1b2c3d4.age",
+  "ssh-host-key": "sha256-ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb.a1b2c3d4.age"
 }
 ```
 

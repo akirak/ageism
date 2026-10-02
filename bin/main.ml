@@ -16,7 +16,6 @@ let show_config (config : string Ageism.config) =
     ; "  indexOutDir: " ^ show_opt config.indexOutDir
     ; "  secretsRoot: " ^ show_opt config.secretsRoot
     ; "  recipient: " ^ recipient
-    ; "  identityFile: " ^ config.identityFile
     ; "  elevationStrategy: " ^ elevation
     ; "  ageExe: " ^ config.ageExe ]
 
@@ -36,7 +35,6 @@ let main ~env (config : string Ageism.config)
         ( match config.recipient with
         | RecipientFile fileStr -> RecipientFile (toEioPath fileStr)
         | RecipientDir dirStr -> RecipientDir (toEioPath dirStr) )
-    ; identityFile= toEioPath config.identityFile
     ; elevationStrategy= config.elevationStrategy
     ; ageExe= config.ageExe }
   in

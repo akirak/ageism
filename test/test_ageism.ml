@@ -68,10 +68,15 @@ let e2e_config ~env ~dir =
   Ageism.
     { indexOutDir= None
     ; recipient= RecipientFile (fs_path ~env (dir ^ "/recip.txt"))
-    ; identityFile= fs_path ~env (dir ^ "/identity.txt")
     ; secretsRoot= Some (fs_path ~env (dir ^ "/secrets"))
     ; elevationStrategy= Sudo
     ; ageExe= "age" }
+
+(* The identity ID for an encrypted identity file with the given contents. *)
+let id_of data = Secrets.id_of_sum (Secrets.sha256sum data)
+
+let write_identity ~dir ~host contents =
+  write_file (dir ^ "/secrets/" ^ host ^ "/identity.age") contents
 
 let status_str = function
   | Ageism.Success -> "ok"
@@ -95,8 +100,23 @@ let test_is_sum () =
   check (option string) "sum_of_name strips the prefix"
     (Some (String.make 64 'a'))
     (Secrets.sum_of_name ("sha256-" ^ String.make 64 'a')) ;
+  check (option string) "sum_of_name accepts the .age extension"
+    (Some (String.make 64 'a'))
+    (Secrets.sum_of_name ("sha256-" ^ String.make 64 'a' ^ ".age")) ;
+  check (option string) "sum_of_name accepts an identity suffix"
+    (Some (String.make 64 'a'))
+    (Secrets.sum_of_name ("sha256-" ^ String.make 64 'a' ^ ".12345678.age")) ;
+  check (option string) "sum_of_name rejects identity files" None
+    (Secrets.sum_of_name "identity.12345678") ;
   check (option string) "sum_of_name rejects other names" None
-    (Secrets.sum_of_name "stale.txt")
+    (Secrets.sum_of_name "stale.txt") ;
+  check string "id_of_sum" "12345678"
+    (Secrets.id_of_sum ("12345678" ^ String.make 56 'a')) ;
+  check string "deployed_identity_name" "identity.12345678"
+    (Secrets.deployed_identity_name "12345678") ;
+  check string "deployed_name"
+    ("sha256-" ^ String.make 64 'a' ^ ".12345678.age")
+    (Secrets.deployed_name ~id:"12345678" (String.make 64 'a'))
 
 let test_select_missing () =
   let deployed = ["aaa"; "bbb"; "stale"] in
@@ -122,6 +142,7 @@ let test_list env () =
   write_file (dir ^ "/repo/plain.age") "regular\n" ;
   Unix.symlink "../../repo/real.age" (dir ^ "/secrets/host1/a.age") ;
   Unix.symlink "../../repo/plain.age" (dir ^ "/secrets/host1/b.age") ;
+  write_file (dir ^ "/secrets/host1/identity.age") "CIPHER:key\n" ;
   write_file (dir ^ "/secrets/host1/skip.txt") "ignored\n" ;
   let root = fs_path ~env (dir ^ "/secrets") in
   let entries = Secrets.list ~root "host1" in
@@ -132,7 +153,14 @@ let test_list env () =
   check bool "b.age has sum of its target" true
     (List.mem (Secrets.sha256sum "regular\n") sums) ;
   check int "unknown host has no secrets" 0
-    (List.length (Secrets.list ~root "nohost"))
+    (List.length (Secrets.list ~root "nohost")) ;
+  (* The reserved identity.age file is not a secret, but the host
+     identity. *)
+  check (option string) "identity.age is the host identity"
+    (Some (Secrets.sha256sum "CIPHER:key\n"))
+    (Option.map fst (Secrets.identity ~root "host1")) ;
+  check bool "unknown host has no identity" true
+    (Secrets.identity ~root "nohost" = None)
 
 let test_decrypt_caches env () =
   with_temp_dir
@@ -144,17 +172,15 @@ let test_decrypt_caches env () =
   (* Two files with identical contents share a sum. *)
   write_file (dir ^ "/a.age") "CIPHER:first\n" ;
   write_file (dir ^ "/b.age") "CIPHER:first\n" ;
-  write_file (dir ^ "/identity.txt") "AGE-SECRET-KEY-1FAKE\n" ;
   let cache = Hashtbl.create 4 in
   let sum = Secrets.sha256sum "CIPHER:first\n" in
-  let identity = fs_path ~env (dir ^ "/identity.txt") in
   let plaintext =
-    Secrets.decrypt ~env ~cache ~age:"age" ~identity ~sum
+    Secrets.decrypt ~env ~cache ~age:"age" ~sum
       (fs_path ~env (dir ^ "/a.age"))
   in
   check string "decrypted" "first\n" plaintext ;
   let again =
-    Secrets.decrypt ~env ~cache ~age:"age" ~identity ~sum
+    Secrets.decrypt ~env ~cache ~age:"age" ~sum
       (fs_path ~env (dir ^ "/b.age"))
   in
   check string "cached" "first\n" again ;
@@ -223,10 +249,12 @@ let test_deploy_localhost env () =
   write_file (dir ^ "/repo/b.age") "CIPHER:bbb\n" ;
   Unix.symlink "../../repo/a.age" (dir ^ "/secrets/testhost/a.age") ;
   Unix.symlink "../../repo/b.age" (dir ^ "/secrets/testhost/b.age") ;
+  write_identity ~dir ~host:"testhost" "CIPHER:hostkey\n" ;
   write_file (dir ^ "/recip.txt") "age1fake\n" ;
   (* a.age is already deployed; stale.txt must be left alone. *)
   let sum_a = Secrets.sha256sum "CIPHER:aaa\n" in
   let sum_b = Secrets.sha256sum "CIPHER:bbb\n" in
+  let id = id_of "CIPHER:hostkey\n" in
   write_file (dir ^ "/dest/sha256-" ^ sum_a) "OLD\n" ;
   write_file (dir ^ "/dest/stale.txt") "stale\n" ;
   make_script ~dir "sudo" fake_sudo ;
@@ -241,19 +269,24 @@ let test_deploy_localhost env () =
   in
   let config = e2e_config ~env ~dir in
   check_ok "deploy succeeds" (Ageism.deploy ~env config [target]) ;
+  let identity_path = dir ^ "/dest/identity." ^ id in
+  check string "host identity installed decrypted" "hostkey\n"
+    (read_file identity_path) ;
+  check int "host identity is root-only" 0o600
+    (Unix.stat identity_path).Unix.st_perm ;
   check string "missing secret rekeyed and installed" "REKEYED:bbb\n"
-    (read_file (dir ^ "/dest/sha256-" ^ sum_b)) ;
+    (read_file (dir ^ "/dest/sha256-" ^ sum_b ^ "." ^ id ^ ".age")) ;
   check string "existing secret untouched" "OLD\n"
     (read_file (dir ^ "/dest/sha256-" ^ sum_a)) ;
   check string "stale file kept" "stale\n"
     (read_file (dir ^ "/dest/stale.txt")) ;
-  check int "decrypt called once" 1
+  check int "decrypt called for identity and missing secret" 2
     (count_matching "--decrypt" (dir ^ "/age.log")) ;
   check int "encrypt called once" 1
     (count_matching "--encrypt" (dir ^ "/age.log")) ;
   (* A second deploy is a no-op. *)
   check_ok "redeploy succeeds" (Ageism.deploy ~env config [target]) ;
-  check int "no further decrypts" 1
+  check int "no further decrypts" 2
     (count_matching "--decrypt" (dir ^ "/age.log"))
 
 let test_deploy_age_exe env () =
@@ -264,6 +297,7 @@ let test_deploy_age_exe env () =
   mkdir_p (dir ^ "/dest") ;
   write_file (dir ^ "/repo/a.age") "CIPHER:aaa\n" ;
   Unix.symlink "../../repo/a.age" (dir ^ "/secrets/testhost/a.age") ;
+  write_identity ~dir ~host:"testhost" "CIPHER:hostkey\n" ;
   write_file (dir ^ "/recip.txt") "age1fake\n" ;
   make_script ~dir "sudo" fake_sudo ;
   (* Referenced by absolute path, so it does not need to be on PATH. *)
@@ -281,9 +315,10 @@ let test_deploy_age_exe env () =
   in
   check_ok "deploy succeeds" (Ageism.deploy ~env config [target]) ;
   let sum = Secrets.sha256sum "CIPHER:aaa\n" in
+  let id = id_of "CIPHER:hostkey\n" in
   check string "secret installed via overridden age" "REKEYED:aaa\n"
-    (read_file (dir ^ "/dest/sha256-" ^ sum)) ;
-  check int "decrypt called once" 1
+    (read_file (dir ^ "/dest/sha256-" ^ sum ^ "." ^ id ^ ".age")) ;
+  check int "decrypt called for identity and secret" 2
     (count_matching "--decrypt" (dir ^ "/age.log")) ;
   check int "encrypt called once" 1
     (count_matching "--encrypt" (dir ^ "/age.log"))
@@ -297,6 +332,7 @@ let test_deploy_resolves_hostname env () =
   mkdir_p (dir ^ "/dest") ;
   write_file (dir ^ "/repo/x.age") "CIPHER:xxx\n" ;
   Unix.symlink "../../repo/x.age" (dir ^ "/secrets/" ^ host ^ "/x.age") ;
+  write_identity ~dir ~host "CIPHER:hostkey\n" ;
   write_file (dir ^ "/recip.txt") "age1fake\n" ;
   make_script ~dir "sudo" fake_sudo ;
   make_script ~dir "age" fake_age ;
@@ -309,8 +345,9 @@ let test_deploy_resolves_hostname env () =
            {installDir= Some (fs_path ~env (dir ^ "/dest")); hostName= None}
        ] ) ;
   let sum = Secrets.sha256sum "CIPHER:xxx\n" in
+  let id = id_of "CIPHER:hostkey\n" in
   check string "secret installed under resolved host" "REKEYED:xxx\n"
-    (read_file (dir ^ "/dest/sha256-" ^ sum))
+    (read_file (dir ^ "/dest/sha256-" ^ sum ^ "." ^ id ^ ".age"))
 
 let test_deploy_shared_secret env () =
   with_temp_dir
@@ -324,6 +361,8 @@ let test_deploy_shared_secret env () =
   write_file (dir ^ "/repo/shared.age") "CIPHER:shared\n" ;
   Unix.symlink "../../repo/shared.age" (dir ^ "/secrets/h1/s.age") ;
   Unix.symlink "../../repo/shared.age" (dir ^ "/secrets/h2/t.age") ;
+  write_identity ~dir ~host:"h1" "CIPHER:key1\n" ;
+  write_identity ~dir ~host:"h2" "CIPHER:key2\n" ;
   write_file (dir ^ "/recips/h1.txt") "age1h1\n" ;
   write_file (dir ^ "/recips/h2.txt") "age1h2\n" ;
   make_script ~dir "sudo" fake_sudo ;
@@ -343,11 +382,17 @@ let test_deploy_shared_secret env () =
   check_ok "deploy succeeds"
     (Ageism.deploy ~env config [target "dest1" "h1"; target "dest2" "h2"]) ;
   let sum = Secrets.sha256sum "CIPHER:shared\n" in
+  let id1 = id_of "CIPHER:key1\n" in
+  let id2 = id_of "CIPHER:key2\n" in
+  check string "identity installed on h1" "key1\n"
+    (read_file (dir ^ "/dest1/identity." ^ id1)) ;
+  check string "identity installed on h2" "key2\n"
+    (read_file (dir ^ "/dest2/identity." ^ id2)) ;
   check string "installed on h1" "REKEYED:shared\n"
-    (read_file (dir ^ "/dest1/sha256-" ^ sum)) ;
+    (read_file (dir ^ "/dest1/sha256-" ^ sum ^ "." ^ id1 ^ ".age")) ;
   check string "installed on h2" "REKEYED:shared\n"
-    (read_file (dir ^ "/dest2/sha256-" ^ sum)) ;
-  check int "shared secret decrypted once" 1
+    (read_file (dir ^ "/dest2/sha256-" ^ sum ^ "." ^ id2 ^ ".age")) ;
+  check int "shared secret and identities decrypted once each" 3
     (count_matching "--decrypt" (dir ^ "/age.log")) ;
   check int "rekeyed once per host" 2
     (count_matching "--encrypt" (dir ^ "/age.log"))
@@ -362,6 +407,7 @@ let test_deploy_index env () =
   write_file (dir ^ "/repo/b.age") "CIPHER:bbb\n" ;
   Unix.symlink "../../repo/a.age" (dir ^ "/secrets/testhost/a.age") ;
   Unix.symlink "../../repo/b.age" (dir ^ "/secrets/testhost/b.age") ;
+  write_identity ~dir ~host:"testhost" "CIPHER:hostkey\n" ;
   write_file (dir ^ "/recip.txt") "age1fake\n" ;
   make_script ~dir "sudo" fake_sudo ;
   make_script ~dir "age" fake_age ;
@@ -379,6 +425,7 @@ let test_deploy_index env () =
            ; hostName= Some "testhost" } ] ) ;
   let sum_a = Secrets.sha256sum "CIPHER:aaa\n" in
   let sum_b = Secrets.sha256sum "CIPHER:bbb\n" in
+  let id = id_of "CIPHER:hostkey\n" in
   let index = read_file (dir ^ "/index/testhost.json") in
   let contains frag =
     let n = String.length frag in
@@ -388,10 +435,11 @@ let test_deploy_index env () =
     in
     loop 0
   in
-  check bool "maps a to its sum.age" true
-    (contains (Printf.sprintf "\"a\": \"sha256-%s.age\"" sum_a)) ;
-  check bool "maps b to its sum.age" true
-    (contains (Printf.sprintf "\"b\": \"sha256-%s.age\"" sum_b))
+  check bool "maps a to its sum.id.age" true
+    (contains (Printf.sprintf "\"a\": \"sha256-%s.%s.age\"" sum_a id)) ;
+  check bool "maps b to its sum.id.age" true
+    (contains (Printf.sprintf "\"b\": \"sha256-%s.%s.age\"" sum_b id)) ;
+  check bool "identity is not a secret" false (contains "\"identity\"")
 
 let test_deploy_remote env () =
   with_temp_dir
@@ -402,6 +450,7 @@ let test_deploy_remote env () =
   mkdir_p (dir ^ "/secrets/fakehost") ;
   write_file (dir ^ "/repo/r.age") "CIPHER:rrr\n" ;
   Unix.symlink "../../repo/r.age" (dir ^ "/secrets/fakehost/r.age") ;
+  write_identity ~dir ~host:"fakehost" "CIPHER:hostkey\n" ;
   write_file (dir ^ "/recip.txt") "age1fake\n" ;
   make_script ~dir "age" fake_age ;
   (* Fake [ssh]: skip -o option pairs, succeed immediately for the master
@@ -428,8 +477,11 @@ exec sh -c "$(echo "$*" | sed 's|/var/lib/ageism|%s|g')"
     (Ageism.deploy ~env (e2e_config ~env ~dir)
        [Ageism.Remote {hostName= "fakehost"}] ) ;
   let sum = Secrets.sha256sum "CIPHER:rrr\n" in
+  let id = id_of "CIPHER:hostkey\n" in
+  check string "identity installed remotely" "hostkey\n"
+    (read_file (fake_dir ^ "/identity." ^ id)) ;
   check string "secret installed remotely" "REKEYED:rrr\n"
-    (read_file (fake_dir ^ "/sha256-" ^ sum))
+    (read_file (fake_dir ^ "/sha256-" ^ sum ^ "." ^ id ^ ".age"))
 
 let test_deploy_failure env () =
   with_temp_dir
@@ -439,6 +491,7 @@ let test_deploy_failure env () =
   mkdir_p (dir ^ "/dest") ;
   write_file (dir ^ "/repo/a.age") "CIPHER:aaa\n" ;
   Unix.symlink "../../repo/a.age" (dir ^ "/secrets/testhost/a.age") ;
+  write_identity ~dir ~host:"testhost" "CIPHER:hostkey\n" ;
   write_file (dir ^ "/recip.txt") "age1fake\n" ;
   make_script ~dir "sudo" fake_sudo ;
   make_script ~dir "age" "exit 1\n" ;
@@ -453,7 +506,9 @@ let test_deploy_failure env () =
              ; hostName= Some "testhost" } ] ) ;
   let sum = Secrets.sha256sum "CIPHER:aaa\n" in
   check bool "nothing was installed" false
-    (Sys.file_exists (dir ^ "/dest/sha256-" ^ sum))
+    (Sys.file_exists (dir ^ "/dest/sha256-" ^ sum)) ;
+  check bool "identity was not installed" false
+    (Sys.file_exists (dir ^ "/dest/identity." ^ id_of "CIPHER:hostkey\n"))
 
 let test_deploy_decrypts_all_before_uploading env () =
   with_temp_dir
@@ -467,6 +522,8 @@ let test_deploy_decrypts_all_before_uploading env () =
   write_file (dir ^ "/repo/b.age") "CIPHER:bbb\n" ;
   Unix.symlink "../../repo/a.age" (dir ^ "/secrets/h1/a.age") ;
   Unix.symlink "../../repo/b.age" (dir ^ "/secrets/h2/b.age") ;
+  write_identity ~dir ~host:"h1" "CIPHER:key1\n" ;
+  write_identity ~dir ~host:"h2" "CIPHER:key2\n" ;
   write_file (dir ^ "/recip.txt") "age1fake\n" ;
   make_script ~dir "sudo" fake_sudo ;
   make_script ~dir "age" fake_age ;
@@ -493,7 +550,7 @@ let test_deploy_decrypts_all_before_uploading env () =
   in
   let decrypts = indices (String.starts_with ~prefix:"--decrypt") in
   let encrypts = indices (String.starts_with ~prefix:"--encrypt") in
-  check int "decrypt calls" 2 (List.length decrypts) ;
+  check int "decrypt calls" 4 (List.length decrypts) ;
   check bool "all decrypts precede all encrypts" true
     (List.fold_left max (-1) decrypts < List.hd encrypts)
 
@@ -509,6 +566,8 @@ let test_deploy_partial_failure env () =
   write_file (dir ^ "/repo/shared.age") "CIPHER:shared\n" ;
   Unix.symlink "../../repo/shared.age" (dir ^ "/secrets/h1/s.age") ;
   Unix.symlink "../../repo/shared.age" (dir ^ "/secrets/h2/s.age") ;
+  write_identity ~dir ~host:"h1" "CIPHER:key1\n" ;
+  write_identity ~dir ~host:"h2" "CIPHER:key2\n" ;
   (* h1's recipient file makes the fake [age --encrypt] fail. *)
   write_file (dir ^ "/recips/h1.txt") "bad\n" ;
   write_file (dir ^ "/recips/h2.txt") "good\n" ;
@@ -537,10 +596,33 @@ exec cat
     @@ Ageism.deploy ~env config [target "dest1" "h1"; target "dest2" "h2"]
     ) ;
   let sum = Secrets.sha256sum "CIPHER:shared\n" in
-  check bool "nothing installed on h1" false
-    (Sys.file_exists (dir ^ "/dest1/sha256-" ^ sum)) ;
+  let id1 = id_of "CIPHER:key1\n" in
+  let id2 = id_of "CIPHER:key2\n" in
+  check bool "no secret installed on h1" false
+    (Sys.file_exists (dir ^ "/dest1/sha256-" ^ sum ^ "." ^ id1 ^ ".age")) ;
   check string "h2 still installed" "REKEYED:shared\n"
-    (read_file (dir ^ "/dest2/sha256-" ^ sum))
+    (read_file (dir ^ "/dest2/sha256-" ^ sum ^ "." ^ id2 ^ ".age"))
+
+let test_deploy_requires_identity env () =
+  with_temp_dir
+  @@ fun dir ->
+  mkdir_p (dir ^ "/secrets/testhost") ;
+  mkdir_p (dir ^ "/dest") ;
+  write_file (dir ^ "/secrets/testhost/a.age") "CIPHER:aaa\n" ;
+  write_file (dir ^ "/recip.txt") "age1fake\n" ;
+  make_script ~dir "sudo" fake_sudo ;
+  make_script ~dir "age" fake_age ;
+  with_path ~dir
+  @@ fun () ->
+  check string "secrets without an identity.age fail" "failed:testhost"
+    ( status_str
+    @@ Ageism.deploy ~env (e2e_config ~env ~dir)
+         [ Ageism.Localhost
+             { installDir= Some (fs_path ~env (dir ^ "/dest"))
+             ; hostName= Some "testhost" } ] ) ;
+  check bool "nothing was installed" false
+    (Sys.file_exists
+       (dir ^ "/dest/sha256-" ^ Secrets.sha256sum "CIPHER:aaa\n") )
 
 let test_deploy_requires_secrets_dir env () =
   let failed =
@@ -585,5 +667,7 @@ let () =
             (with_env test_deploy_decrypts_all_before_uploading)
         ; test_case "partial failure" `Quick
             (with_env test_deploy_partial_failure)
+        ; test_case "requires identity" `Quick
+            (with_env test_deploy_requires_identity)
         ; test_case "requires secrets dir" `Quick
             (with_env test_deploy_requires_secrets_dir) ] ) ]

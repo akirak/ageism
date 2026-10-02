@@ -107,6 +107,7 @@ If no `HOST` arguments are provided, `ageism` defaults to deploying to `localhos
 | Option | Description |
 |---|---|
 | `--secrets-root=DIR` | **Required.** Root directory containing per-host secrets directories. |
+| `-i`, `--identity=FILE` | **Required.** Path to an age identity file (private key) used to decrypt source secrets on the controller. |
 | `--recipient-file=FILE` | Path to an age recipient file (public key) to use for encryption. |
 | `--recipient-dir=DIR` | Directory containing recipient files named `<HOSTNAME>.txt`. |
 | `--index-out-dir=DIR` | Output directory where `<HOSTNAME>.json` secret index maps will be written. |
@@ -125,6 +126,7 @@ Every option can also be configured via an environment variable. Command line op
 | Environment variable | Option |
 |---|---|
 | `AGEISM_SECRETS_ROOT` | `--secrets-root` |
+| `AGEISM_IDENTITY_FILE` | `-i`, `--identity` |
 | `AGEISM_RECIPIENT_FILE` | `--recipient-file` |
 | `AGEISM_RECIPIENT_DIR` | `--recipient-dir` |
 | `AGEISM_INDEX_OUT_DIR` | `--index-out-dir` |

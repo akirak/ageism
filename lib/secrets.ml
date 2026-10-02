@@ -85,12 +85,13 @@ let identity ~root host_name =
 
 (* Decrypt an .age file, keeping the result in [cache] so a secret shared by
    several hosts is decrypted only once. *)
-let decrypt ~env ~cache ~age ~sum path =
+let decrypt ~env ~cache ~age ~identity ~sum path =
   match Hashtbl.find_opt cache sum with
   | Some plaintext -> plaintext
   | None ->
       let plaintext =
-        run_capture ~env ~input:(Path.load path) [age; "--decrypt"]
+        run_capture ~env ~input:(Path.load path)
+          [age; "--decrypt"; "--identity"; Path.native_exn identity]
       in
       Hashtbl.add cache sum plaintext ;
       plaintext

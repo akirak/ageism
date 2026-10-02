@@ -11,6 +11,7 @@ type elevation = Sudo | Run0
 type 'path config =
   { indexOutDir: 'path option
   ; recipient: 'path recipient
+  ; identityFile: 'path
   ; secretsRoot: 'path option
   ; elevationStrategy: elevation
   ; ageExe: string }
@@ -240,14 +241,17 @@ let prepare_target ~env ~cache ~config ~secrets_root conn =
         if List.mem name entries then None
         else
           Some
-            (name, Secrets.decrypt ~env ~cache ~age:config.ageExe ~sum path)
+            ( name
+            , Secrets.decrypt ~env ~cache ~age:config.ageExe
+                ~identity:config.identityFile ~sum path )
     | None -> None
   in
   let plan_pending =
     List.map
       (fun (sum, path) ->
         ( name_of sum
-        , Secrets.decrypt ~env ~cache ~age:config.ageExe ~sum path ) )
+        , Secrets.decrypt ~env ~cache ~age:config.ageExe
+            ~identity:config.identityFile ~sum path ) )
       missing
   in
   let plan_names =

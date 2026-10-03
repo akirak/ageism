@@ -46,7 +46,7 @@ in
 
         agePlugins = mkOption {
           type = types.listOf types.package;
-          default = "";
+          default = [ ];
           description = "Extra packages loaded into the decryption script";
         };
       };

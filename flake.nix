@@ -36,6 +36,7 @@
         treefmt-nix.lib.evalModule pkgs {
           projectRootFile = "flake.nix";
 
+          programs.biome.enable = true;
           programs.nixfmt.enable = true;
           programs.ocamlformat.enable = true;
           programs.zizmor.enable = true;

@@ -2,6 +2,8 @@
 
 Ageism is an `age` secret deployment tool for NixOS.
 
+Documentation: <https://akirak.github.io/ageism/>
+
 `ageism` manages and deploys encrypted secrets to target hosts (both localhost and remote machines over SSH). It handles secret rekeying, deduplication, incremental deployment, and secret indexing for NixOS configurations.
 
 ---

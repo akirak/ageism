@@ -1,0 +1,86 @@
+# NixOS module
+
+The flake exports a NixOS module as `nixosModules.default`. It adds a oneshot systemd service, `ageism-decrypt`, that decrypts deployed secrets into their final locations at boot (and on reload whenever the secret list changes).
+
+## Setup
+
+Add the flake to your inputs and import the module:
+
+```nix
+{
+  inputs.ageism.url = "github:akirak/ageism";
+
+  outputs = { nixpkgs, ageism, ... }: {
+    nixosConfigurations.host1 = nixpkgs.lib.nixosSystem {
+      modules = [
+        ageism.nixosModules.default
+        ./configuration.nix
+      ];
+    };
+  };
+}
+```
+
+## Declaring secrets
+
+Each entry in `services.ageism.secrets` points at a deployed secret (`source`) and describes where and how the plaintext is installed. The [index file](../reference/index-file) generated with `--index-out-dir` gives you the deployed filename for each secret:
+
+```nix
+{ ... }:
+let
+  index = builtins.fromJSON (builtins.readFile ./indices/host1.json);
+  deployed = name: "/var/lib/ageism/${index.${name}}";
+in
+{
+  services.ageism = {
+    enable = true;
+
+    secrets = {
+      wifi-password = {
+        source = deployed "wifi-password";
+        path = "/run/ageism/wifi-password";
+        owner = "root";
+        mode = "0400";
+      };
+
+      ssh-host-key = {
+        source = deployed "ssh-host-key";
+        path = "/run/ageism/ssh-host-key";
+        owner = "root";
+        mode = "0400";
+      };
+    };
+  };
+}
+```
+
+For each secret, the service:
+
+1. Skips it if `path` already exists.
+2. Derives the identity ID from the `source` filename and decrypts it with `identity.<ID>` in the same directory.
+3. Writes the plaintext to `path`, then applies `owner` (via `chown`) and `mode` (via `chmod`).
+
+The service fails if any secret could not be installed, after attempting all of them.
+
+## Options
+
+### `services.ageism.enable`
+
+Whether to enable the `ageism-decrypt` service.
+
+### `services.ageism.secrets.<name>`
+
+| Option | Type | Description |
+|---|---|---|
+| `source` | string | Path to the deployed secret, e.g. `/var/lib/ageism/sha256-<sha256>.<ID>.age`. |
+| `path` | string | Destination of the decrypted secret. Parent directories are created. |
+| `owner` | string | Owner of the decrypted file, as accepted by `chown` (e.g. `user` or `user:group`). |
+| `mode` | string | Octal file mode, e.g. `"0400"`. |
+
+### `services.ageism.settings.agePackage`
+
+The age implementation used for decryption (`age` or `rage`). Defaults to `pkgs.age`.
+
+### `services.ageism.settings.agePlugins`
+
+A list of extra packages (e.g. age plugins) added to the service's `PATH`.

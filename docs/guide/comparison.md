@@ -76,6 +76,7 @@ agenix-rekey may suit you better if:
 
 ageism may suit you better if:
 
+- You prefer a simpler tool decoupled from your system configuration, at the cost of an extra step to deploy secrets.
 - You do not want rekeyed secrets in your repository or the Nix store.
 - You want to build systems, e.g. in CI, without the master key.
 - You want hosts to have working secrets from their first boot, without depending on their SSH host keys.

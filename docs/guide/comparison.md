@@ -37,7 +37,7 @@ agenix-rekey has two storage modes:
 
 ageism avoids both trade-offs. Rekeyed secrets are never in the repository or the Nix store, and building the system needs neither the master key nor the rekeyed secrets. The index files contain only filenames.
 
-ageism never removes old rekeyed secrets or identities from `/var/lib/ageism`, so they accumulate on the host.
+Old rekeyed secrets and identities stay in `/var/lib/ageism` until you deploy with `--prune` (see [Identity rotation](./how-it-works#identity-rotation)).
 
 ### Deployment
 

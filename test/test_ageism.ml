@@ -64,14 +64,15 @@ let with_shell env fn =
 
 let fs_path ~env str = Path.(Stdenv.fs env / str)
 
-let e2e_config ~env ~dir =
+let e2e_config ?(prune = false) ~env ~dir () =
   Ageism.
     { indexOutDir= None
     ; recipient= RecipientFile (fs_path ~env (dir ^ "/recip.txt"))
     ; identityFile= fs_path ~env (dir ^ "/identity.txt")
     ; secretsRoot= Some (fs_path ~env (dir ^ "/secrets"))
     ; elevationStrategy= Sudo
-    ; ageExe= "age" }
+    ; ageExe= "age"
+    ; prune }
 
 (* The identity ID for an encrypted identity file with the given contents. *)
 let id_of data = Secrets.id_of_sum (Secrets.sha256sum data)
@@ -270,7 +271,7 @@ let test_deploy_localhost env () =
       { installDir= Some (fs_path ~env (dir ^ "/dest"))
       ; hostName= Some "testhost" }
   in
-  let config = e2e_config ~env ~dir in
+  let config = e2e_config ~env ~dir () in
   check_ok "deploy succeeds" (Ageism.deploy ~env config [target]) ;
   let identity_path = dir ^ "/dest/identity." ^ id in
   check string "host identity installed decrypted" "hostkey\n"
@@ -309,7 +310,7 @@ let test_deploy_age_exe env () =
   with_path ~dir
   @@ fun () ->
   let config =
-    {(e2e_config ~env ~dir) with Ageism.ageExe= dir ^ "/fake-age"}
+    {(e2e_config ~env ~dir ()) with Ageism.ageExe= dir ^ "/fake-age"}
   in
   let target =
     Ageism.Localhost
@@ -343,7 +344,7 @@ let test_deploy_resolves_hostname env () =
   with_path ~dir
   @@ fun () ->
   check_ok "deploy succeeds"
-    (Ageism.deploy ~env (e2e_config ~env ~dir)
+    (Ageism.deploy ~env (e2e_config ~env ~dir ())
        [ Ageism.Localhost
            {installDir= Some (fs_path ~env (dir ^ "/dest")); hostName= None}
        ] ) ;
@@ -374,7 +375,7 @@ let test_deploy_shared_secret env () =
   with_path ~dir
   @@ fun () ->
   let config =
-    { (e2e_config ~env ~dir) with
+    { (e2e_config ~env ~dir ()) with
       Ageism.recipient= RecipientDir (fs_path ~env (dir ^ "/recips")) }
   in
   let target install_dir host_name =
@@ -418,7 +419,7 @@ let test_deploy_index env () =
   with_path ~dir
   @@ fun () ->
   let config =
-    { (e2e_config ~env ~dir) with
+    { (e2e_config ~env ~dir ()) with
       Ageism.indexOutDir= Some (fs_path ~env (dir ^ "/index")) }
   in
   check_ok "deploy succeeds"
@@ -477,7 +478,7 @@ exec sh -c "$(echo "$*" | sed 's|/var/lib/ageism|%s|g')"
   with_path ~dir
   @@ fun () ->
   check_ok "deploy succeeds"
-    (Ageism.deploy ~env (e2e_config ~env ~dir)
+    (Ageism.deploy ~env (e2e_config ~env ~dir ())
        [Ageism.Remote {hostName= "fakehost"}] ) ;
   let sum = Secrets.sha256sum "CIPHER:rrr\n" in
   let id = id_of "CIPHER:hostkey\n" in
@@ -503,7 +504,7 @@ let test_deploy_failure env () =
   @@ fun () ->
   check string "deploy reports failure when age fails" "failed:testhost"
     ( status_str
-    @@ Ageism.deploy ~env (e2e_config ~env ~dir)
+    @@ Ageism.deploy ~env (e2e_config ~env ~dir ())
          [ Ageism.Localhost
              { installDir= Some (fs_path ~env (dir ^ "/dest"))
              ; hostName= Some "testhost" } ] ) ;
@@ -539,7 +540,7 @@ let test_deploy_decrypts_all_before_uploading env () =
       ; hostName= Some host_name }
   in
   check_ok "deploy succeeds"
-    (Ageism.deploy ~env (e2e_config ~env ~dir)
+    (Ageism.deploy ~env (e2e_config ~env ~dir ())
        [target "dest1" "h1"; target "dest2" "h2"] ) ;
   (* Phase separation: every --decrypt must precede every --encrypt. *)
   let lines =
@@ -586,7 +587,7 @@ exec cat
   with_path ~dir
   @@ fun () ->
   let config =
-    { (e2e_config ~env ~dir) with
+    { (e2e_config ~env ~dir ()) with
       Ageism.recipient= RecipientDir (fs_path ~env (dir ^ "/recips")) }
   in
   let target install_dir host_name =
@@ -619,7 +620,7 @@ let test_deploy_requires_identity env () =
   @@ fun () ->
   check string "secrets without an identity.age fail" "failed:testhost"
     ( status_str
-    @@ Ageism.deploy ~env (e2e_config ~env ~dir)
+    @@ Ageism.deploy ~env (e2e_config ~env ~dir ())
          [ Ageism.Localhost
              { installDir= Some (fs_path ~env (dir ^ "/dest"))
              ; hostName= Some "testhost" } ] ) ;
@@ -632,13 +633,86 @@ let test_deploy_requires_secrets_dir env () =
     try
       ignore
         (Ageism.deploy ~env
-           { (e2e_config ~env ~dir:"/nonexistent") with
+           { (e2e_config ~env ~dir:"/nonexistent" ()) with
              Ageism.secretsRoot= None }
            [] ) ;
       false
     with _ -> true
   in
   check bool "raises without secrets dir" true failed
+
+let test_deploy_prune env () =
+  with_temp_dir
+  @@ fun dir ->
+  mkdir_p (dir ^ "/repo") ;
+  mkdir_p (dir ^ "/secrets/testhost") ;
+  mkdir_p (dir ^ "/dest") ;
+  write_file (dir ^ "/repo/a.age") "CIPHER:aaa\n" ;
+  write_file (dir ^ "/repo/b.age") "CIPHER:bbb\n" ;
+  Unix.symlink "../../repo/a.age" (dir ^ "/secrets/testhost/a.age") ;
+  Unix.symlink "../../repo/b.age" (dir ^ "/secrets/testhost/b.age") ;
+  write_identity ~dir ~host:"testhost" "CIPHER:hostkey\n" ;
+  write_file (dir ^ "/recip.txt") "age1fake\n" ;
+  let sum_a = Secrets.sha256sum "CIPHER:aaa\n" in
+  let sum_b = Secrets.sha256sum "CIPHER:bbb\n" in
+  let sum_gone = Secrets.sha256sum "CIPHER:gone\n" in
+  let id = id_of "CIPHER:hostkey\n" in
+  let dest name = dir ^ "/dest/" ^ name in
+  (* a.age was deployed under an older identity, which must be kept; the
+     secret and identity that nothing references must go. *)
+  let a_name = "sha256-" ^ sum_a ^ ".0000aaaa.age" in
+  write_file (dest a_name) "OLD\n" ;
+  write_file (dest "identity.0000aaaa") "oldkey\n" ;
+  write_file (dest ("sha256-" ^ sum_gone ^ "." ^ id ^ ".age")) "GONE\n" ;
+  write_file (dest ("sha256-" ^ sum_gone)) "LEGACY\n" ;
+  write_file (dest "identity.0000bbbb") "unused\n" ;
+  write_file (dest "stale.txt") "stale\n" ;
+  make_script ~dir "sudo" fake_sudo ;
+  make_script ~dir "age" fake_age ;
+  Unix.putenv "AGEISM_LOG" (dir ^ "/age.log") ;
+  with_path ~dir
+  @@ fun () ->
+  let target =
+    Ageism.Localhost
+      { installDir= Some (fs_path ~env (dir ^ "/dest"))
+      ; hostName= Some "testhost" }
+  in
+  check_ok "deploy succeeds"
+    (Ageism.deploy ~env (e2e_config ~prune:true ~env ~dir ()) [target]) ;
+  let entries = Sys.readdir (dir ^ "/dest") |> Array.to_list in
+  check
+    (slist string String.compare)
+    "only referenced files remain"
+    [ a_name
+    ; "identity.0000aaaa"
+    ; "identity." ^ id
+    ; "sha256-" ^ sum_b ^ "." ^ id ^ ".age"
+    ; "stale.txt" ]
+    entries
+
+let test_deploy_prune_requires_secrets_dir env () =
+  with_temp_dir
+  @@ fun dir ->
+  mkdir_p (dir ^ "/secrets") ;
+  mkdir_p (dir ^ "/dest") ;
+  let deployed = "sha256-" ^ String.make 64 'a' ^ ".12345678.age" in
+  write_file (dir ^ "/dest/" ^ deployed) "KEEP\n" ;
+  write_file (dir ^ "/dest/identity.12345678") "key\n" ;
+  write_file (dir ^ "/recip.txt") "age1fake\n" ;
+  make_script ~dir "sudo" fake_sudo ;
+  make_script ~dir "age" fake_age ;
+  Unix.putenv "AGEISM_LOG" (dir ^ "/age.log") ;
+  with_path ~dir
+  @@ fun () ->
+  check_ok "deploy succeeds"
+    (Ageism.deploy ~env
+       (e2e_config ~prune:true ~env ~dir ())
+       [ Ageism.Localhost
+           { installDir= Some (fs_path ~env (dir ^ "/dest"))
+           ; hostName= Some "testhost" } ] ) ;
+  check bool "secret kept" true (Sys.file_exists (dir ^ "/dest/" ^ deployed)) ;
+  check bool "identity kept" true
+    (Sys.file_exists (dir ^ "/dest/identity.12345678"))
 
 (* ---------- suite ---------- *)
 
@@ -673,4 +747,7 @@ let () =
         ; test_case "requires identity" `Quick
             (with_env test_deploy_requires_identity)
         ; test_case "requires secrets dir" `Quick
-            (with_env test_deploy_requires_secrets_dir) ] ) ]
+            (with_env test_deploy_requires_secrets_dir)
+        ; test_case "prune" `Quick (with_env test_deploy_prune)
+        ; test_case "prune requires secrets dir" `Quick
+            (with_env test_deploy_prune_requires_secrets_dir) ] ) ]

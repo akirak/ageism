@@ -13,7 +13,8 @@ type 'path config =
   ; identityFile: 'path
   ; secretsRoot: 'path option
   ; elevationStrategy: elevation
-  ; ageExe: string }
+  ; ageExe: string
+  ; prune: bool }
 
 (** Result of {!deploy}. [Failed names] lists the targets whose deployment
     failed; other targets were still deployed. *)

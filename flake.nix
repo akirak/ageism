@@ -86,6 +86,10 @@
               ocp-indent
               utop
               alcotest
+
+              # For VitePress
+              pkgs.nodejs
+              pkgs.corepack
             ];
           };
         }

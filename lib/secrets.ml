@@ -48,6 +48,21 @@ let sum_of_name name =
   if is_sum name then Some (String.sub name (String.length sum_prefix) 64)
   else None
 
+let is_id s = String.length s = 8 && String.for_all is_hex s
+
+(* The identity ID in a deployed secret name (sha256-<sum>.<id>.age), or
+   [None] for other names, including the legacy form without an ID. *)
+let id_of_secret_name name =
+  match String.split_on_char '.' name with
+  | [sum; id; "age"] when is_sum sum && is_id id -> Some id
+  | _ -> None
+
+(* The ID of a deployed identity name (identity.<id>), or [None]. *)
+let id_of_identity_name name =
+  match String.split_on_char '.' name with
+  | ["identity"; id] when is_id id -> Some id
+  | _ -> None
+
 (* [select_missing deployed secrets] is the elements of [secrets] whose sums
    are not in [deployed]. *)
 let select_missing deployed secrets =

@@ -112,10 +112,12 @@ let connect ~env ~sw (config : _ Path.t config) (target : _ Path.t target) =
         Shell.spawn ~env ~sw (elevation_command config.elevationStrategy)
       in
       let conn_name =
-        validate_host_name
-          ( match hostName with
-          | Some name -> name
-          | None -> shell_hostname conn_shell )
+        try
+          validate_host_name
+            ( match hostName with
+            | Some name -> name
+            | None -> shell_hostname conn_shell )
+        with exn -> Shell.close conn_shell ; raise exn
       in
       let conn_dir =
         match installDir with

@@ -62,7 +62,9 @@ If `--index-out-dir` is given, `<index-out-dir>/<host>.json` is written, mapping
 
 ## Identity rotation
 
-Because each identity is stored under an ID derived from its encrypted file, replacing `identity.age` installs a new `identity.<ID>` alongside the old one. Existing identities are never re-transferred or removed, so secrets encrypted to an older identity remain decryptable.
+Because each identity is stored under an ID derived from its encrypted file, replacing `identity.age` installs a new `identity.<ID>` alongside the old one. Existing identities are never re-transferred, so secrets encrypted to an older identity remain decryptable.
+
+Deployed files are not removed by default. With `--prune`, `ageism` removes secrets that are no longer in the host's secrets directory, along with identities that no remaining secret uses. Secrets already deployed under an older identity keep using it, so its `identity.<ID>` is kept until they are gone. Pruned files are removed before you activate the new NixOS configuration, so a reboot into the previous generation in between cannot decrypt secrets that were removed.
 
 ## At boot
 

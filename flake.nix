@@ -44,6 +44,8 @@
       );
     in
     {
+      nixosModules.default = import ./nix/module.nix;
+
       packages = eachSystem (
         _system: pkgs: with pkgs; {
           default = ocamlPackages.buildDunePackage {

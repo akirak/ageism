@@ -4,22 +4,31 @@ The diagram shows how a secret moves from the repository to a running service wh
 
 ```mermaid
 flowchart LR
-  subgraph repo["Repository: secrets/HOST/"]
-    src["*.age encrypted to you"]
+  subgraph client["Client"]
+    subgraph repo["Repository: secrets/HOST/"]
+      src["*.age encrypted to you"]
+    end
+    subgraph mem["Memory"]
+      tmp["plaintext"]
+    end
   end
-  subgraph lib["Target: /var/lib/ageism/"]
-    dep["*.age encrypted to the host"]
+  subgraph target["Deployment target"]
+    subgraph lib["/var/lib/ageism/"]
+      dep["*.age encrypted to the host"]
+    end
+    subgraph run["/run/ageism/"]
+      plain["plaintext files"]
+    end
   end
-  subgraph run["Target: /run/ageism/"]
-    plain["plaintext files"]
-  end
-  src -- "ageism" --> dep
-  dep -- "ageism-decrypt.service" --> plain
+  src -- "decrypt" --> tmp
+  tmp -- "re-encrypt and transfer" --> dep
+  dep -- "decrypt" --> plain
 ```
 
-1. `ageism` decrypts the secrets in the repository, re-encrypts them to the host's key, and copies them to `/var/lib/ageism` on the target.
-2. `ageism-decrypt.service` from the NixOS module decrypts them on the target into the paths declared in `services.ageism.secrets`, such as files under `/run/ageism`.
-3. Services read the plaintext files directly or through [systemd credentials](./systemd-credentials).
+1. On the client, `ageism` decrypts the secrets in the repository. The plaintext is only held in memory.
+2. `ageism` re-encrypts the plaintext to the host's key and transfers the result to `/var/lib/ageism` on the target.
+3. On the target, `ageism-decrypt.service` from the NixOS module decrypts the secrets into the paths declared in `services.ageism.secrets`, such as files under `/run/ageism`.
+4. Services read the plaintext files directly or through [systemd credentials](./systemd-credentials).
 
 The rest of this page describes each phase of a deployment.
 

@@ -1,6 +1,49 @@
 # How it works
 
-A deployment runs through the following phases.
+The diagram shows how a secret moves from the repository to a running service when `ageism` is used with the [NixOS module](./nixos-module).
+
+```mermaid
+flowchart TB
+  subgraph repo["Repository"]
+    src["secrets/HOST/NAME.age"]
+    hostid["secrets/HOST/identity.age"]
+    recip["recipients/HOST.txt"]
+  end
+
+  subgraph ctrl["Controller: ageism"]
+    dec["age --decrypt"]
+    enc["age --encrypt"]
+    idx["indices/HOST.json"]
+  end
+
+  subgraph target["Target host"]
+    id["/var/lib/ageism/identity.ID"]
+    store["/var/lib/ageism/sha256-HASH.ID.age"]
+    svc["ageism-decrypt.service"]
+    plain["/run/ageism/NAME"]
+    app["Services"]
+  end
+
+  src --> dec
+  hostid --> dec
+  dec -- "identity, if missing" --> id
+  dec -- "plaintext" --> enc
+  recip --> enc
+  enc -- "SSH or sudo/run0" --> store
+  enc --> idx
+  idx -- "services.ageism.secrets" --> svc
+  id --> svc
+  store --> svc
+  svc -- "age --decrypt" --> plain
+  plain -- "file path or LoadCredential=" --> app
+```
+
+1. On the controller, `ageism` decrypts the source secrets and the host identity with your identity, then re-encrypts the secrets to the host's recipient.
+2. The host identity and the re-encrypted secrets are written to `/var/lib/ageism` on the target. The index file records the deployed filename of each secret.
+3. The NixOS configuration reads the index file to declare `services.ageism.secrets`. On the target, `ageism-decrypt.service` decrypts each secret with the matching `identity.ID` and installs the plaintext at its `path`.
+4. Services read the plaintext directly or through [systemd credentials](./systemd-credentials).
+
+The rest of this page describes each phase of a deployment.
 
 ## 1. Discovery and hashing
 

@@ -119,6 +119,32 @@ let test_is_sum () =
     ("sha256-" ^ String.make 64 'a' ^ ".12345678.age")
     (Secrets.deployed_name ~id:"12345678" (String.make 64 'a'))
 
+let test_check_host_name () =
+  let ok name =
+    check bool ("accepts " ^ name) true
+      (Result.is_ok (Ageism.check_host_name name))
+  in
+  let bad name =
+    check bool
+      ("rejects " ^ String.escaped name)
+      true
+      (Result.is_error (Ageism.check_host_name name))
+  in
+  List.iter ok
+    ["host1"; "web-01.example.com"; "my_host"; "192.168.0.1"; "fe80::1"] ;
+  List.iter bad
+    [ ""
+    ; "."
+    ; ".."
+    ; "../etc"
+    ; "a/b"
+    ; "/abs"
+    ; ".hidden"
+    ; "-oProxyCommand=x"
+    ; "a b"
+    ; "host\n"
+    ; "user@host" ]
+
 let test_select_missing () =
   let deployed = ["aaa"; "bbb"; "stale"] in
   let secrets = [("aaa", 1); ("ccc", 2); ("bbb", 3)] in
@@ -640,12 +666,36 @@ let test_deploy_requires_secrets_dir env () =
   in
   check bool "raises without secrets dir" true failed
 
+let test_deploy_rejects_bad_hostname env () =
+  with_temp_dir
+  @@ fun dir ->
+  mkdir_p (dir ^ "/secrets") ;
+  mkdir_p (dir ^ "/dest") ;
+  write_file (dir ^ "/recip.txt") "age1fake\n" ;
+  make_script ~dir "sudo" fake_sudo ;
+  make_script ~dir "age" fake_age ;
+  make_script ~dir "hostname" "echo ../evil\n" ;
+  Unix.putenv "AGEISM_LOG" (dir ^ "/age.log") ;
+  with_path ~dir
+  @@ fun () ->
+  check string "invalid resolved hostname fails" "failed:localhost"
+    ( status_str
+    @@ Ageism.deploy ~env (e2e_config ~env ~dir)
+         [ Ageism.Localhost
+             {installDir= Some (fs_path ~env (dir ^ "/dest")); hostName= None}
+         ] ) ;
+  check string "invalid remote hostname fails" "failed:../evil"
+    ( status_str
+    @@ Ageism.deploy ~env (e2e_config ~env ~dir)
+         [Ageism.Remote {hostName= "../evil"}] )
+
 (* ---------- suite ---------- *)
 
 let () =
   run "ageism"
     [ ( "secrets"
       , [ test_case "is_sum" `Quick test_is_sum
+        ; test_case "check_host_name" `Quick test_check_host_name
         ; test_case "select_missing" `Quick test_select_missing
         ; test_case "list" `Quick (with_env test_list)
         ; test_case "decrypt caches by sum" `Quick
@@ -673,4 +723,6 @@ let () =
         ; test_case "requires identity" `Quick
             (with_env test_deploy_requires_identity)
         ; test_case "requires secrets dir" `Quick
-            (with_env test_deploy_requires_secrets_dir) ] ) ]
+            (with_env test_deploy_requires_secrets_dir)
+        ; test_case "rejects invalid host names" `Quick
+            (with_env test_deploy_rejects_bad_hostname) ] ) ]

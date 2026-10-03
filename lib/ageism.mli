@@ -19,6 +19,11 @@ type 'path config =
     failed; other targets were still deployed. *)
 type status = Success | Failed of string list
 
+val check_host_name : string -> (string, string) result
+(** [check_host_name name] is [Ok name] if [name] can be used as a host name:
+    non-empty, consisting of letters, digits, ['.'], ['-'], ['_'] and [':'],
+    and not starting with ['.'] or ['-']. *)
+
 val deploy :
      env:Eio_unix.Stdenv.base
   -> 'a Eio.Path.t config

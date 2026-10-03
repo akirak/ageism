@@ -6,6 +6,8 @@ ageism [OPTION]… [HOST]…
 
 Each `HOST` is deployed to over SSH as `root@HOST`. If no `HOST` is given, `ageism` deploys to localhost.
 
+`HOST` (and the local host name when deploying to localhost) is also used as a file name in the secrets root, recipient directory and index directory. It may only contain letters, digits, `.`, `-`, `_` and `:`, and must not start with `.` or `-`. Use an SSH config alias for anything else, such as a different user or port.
+
 ## Options
 
 | Option | Description |

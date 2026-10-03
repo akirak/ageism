@@ -22,6 +22,32 @@ type status = Success | Failed of string list
 
 let target_directory = "/var/lib/ageism"
 
+(* Host names are used as SSH destinations and as file names under the
+   secrets root, the recipient directory and the index directory, so they
+   must not contain path separators, whitespace or a leading dot or dash. *)
+let check_host_name name =
+  let valid_char = function
+    | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '.' | '-' | '_' | ':' -> true
+    | _ -> false
+  in
+  if name = "" then Error "host name must not be empty"
+  else if not (String.for_all valid_char name) then
+    Error
+      (Printf.sprintf
+         "invalid host name %S: only letters, digits, '.', '-', '_' and ':' \
+          are allowed"
+         name )
+  else if name.[0] = '.' || name.[0] = '-' then
+    Error
+      (Printf.sprintf "invalid host name %S: must not start with %C" name
+         name.[0] )
+  else Ok name
+
+let validate_host_name name =
+  match check_host_name name with
+  | Ok name -> name
+  | Error msg -> failwith msg
+
 (* A deployable host. Local targets get an interactive privileged shell;
    remote targets are reached through a single multiplexed SSH connection
    whose control socket is [sock]. *)
@@ -57,6 +83,7 @@ let ssh_args ~sock host cmd =
 let connect ~env ~sw (config : _ Path.t config) (target : _ Path.t target) =
   match target with
   | Remote {hostName} ->
+      let hostName = validate_host_name hostName in
       traceln "Connecting to %s" hostName ;
       (* Spawn a multiplexing master in the background. It authenticates and
          exits on failure before forking, so connection problems are raised
@@ -84,9 +111,10 @@ let connect ~env ~sw (config : _ Path.t config) (target : _ Path.t target) =
         Shell.spawn ~env ~sw (elevation_command config.elevationStrategy)
       in
       let conn_name =
-        match hostName with
-        | Some name -> name
-        | None -> shell_hostname conn_shell
+        validate_host_name
+          ( match hostName with
+          | Some name -> name
+          | None -> shell_hostname conn_shell )
       in
       let conn_dir =
         match installDir with

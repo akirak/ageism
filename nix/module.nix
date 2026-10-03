@@ -29,7 +29,7 @@ in
                 type = types.str;
               };
               mode = mkOption {
-                type = types.str;
+                type = types.strMatching "[0-7]{3,4}";
               };
             };
           }
@@ -54,6 +54,8 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    systemd.tmpfiles.rules = [ "d /run/ageism 0755 root root -" ];
+
     systemd.services.ageism-decrypt = {
       wantedBy = [ "multi-user.target" ];
       description = "Decrypt age secrets";
@@ -67,7 +69,38 @@ in
 
       environment.AGE_BIN = lib.getExe cfg.settings.agePackage;
 
-      serviceConfig.Type = "oneshot";
+      serviceConfig = {
+        Type = "oneshot";
+        UMask = "0077";
+
+        CapabilityBoundingSet = [
+          "CAP_CHOWN"
+          "CAP_FOWNER"
+          "CAP_DAC_OVERRIDE"
+          "CAP_DAC_READ_SEARCH"
+        ];
+        NoNewPrivileges = true;
+        LockPersonality = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+        RestrictNamespaces = true;
+        SystemCallArchitectures = "native";
+
+        PrivateTmp = true;
+        ProtectHome = true;
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        ProtectKernelLogs = true;
+        ProtectControlGroups = true;
+        ProtectClock = true;
+        ProtectHostname = true;
+        ProtectProc = "invisible";
+
+        # Age plugins may talk to local daemons such as pcscd over AF_UNIX.
+        PrivateNetwork = true;
+        RestrictAddressFamilies = [ "AF_UNIX" ];
+      };
+
       script = ''
         ${lib.getExe pkgs.nodejs} ${./decrypt-secrets.mjs} ${indexPath}
       '';

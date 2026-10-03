@@ -72,6 +72,9 @@ function trustedDirectory(dir) {
 	for (const name of missing) {
 		current = path.join(current, name);
 		fs.mkdirSync(current, { mode: 0o755 });
+		// The service runs with UMask=0077, so set the mode explicitly to let
+		// secret owners traverse the directory.
+		fs.chmodSync(current, 0o755);
 		assertTrusted(current);
 	}
 	return current;
@@ -92,6 +95,8 @@ for (const [_, { source, path: target, owner, mode }] of Object.entries(
 
 	let tmpDir;
 	try {
+		if (!/^[0-7]{3,4}$/.test(mode))
+			throw new Error(`invalid mode ${JSON.stringify(mode)}`);
 		const dir = trustedDirectory(path.dirname(target));
 		const dest = path.join(dir, path.basename(target));
 

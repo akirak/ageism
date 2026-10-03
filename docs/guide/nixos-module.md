@@ -63,7 +63,9 @@ For each secret, the service:
 
 The service fails if any secret could not be installed, after attempting all of them.
 
-Because the service runs as root, the parent directory of `path` and all of its ancestors (after resolving symlinks) must be owned by root and must not be writable by group or others. Otherwise another user could redirect the write or the `chown` to a different file. This rules out locations such as home directories and `/tmp`. Put secrets under a root-owned directory such as `/run/ageism`, and use [systemd credentials](./systemd-credentials) or a symlink to make them available elsewhere.
+Because the service runs as root, the parent directory of `path` and all of its ancestors (after resolving symlinks) must be owned by root and must not be writable by group or others. Otherwise another user could redirect the write or the `chown` to a different file. This rules out locations such as home directories and `/tmp`. Put secrets under a root-owned directory such as `/run/ageism`, which the module creates at boot (owned by root, mode `0755`), and use [systemd credentials](./systemd-credentials) or a symlink to make them available elsewhere.
+
+The service runs with `UMask=0077` and a systemd sandbox: no network (only `AF_UNIX` sockets, so age plugins can reach daemons such as `pcscd`), no new privileges, a private `/tmp`, an inaccessible `/home`, and a capability bounding set limited to `CAP_CHOWN`, `CAP_FOWNER`, `CAP_DAC_OVERRIDE` and `CAP_DAC_READ_SEARCH`. The rest of the file system stays writable, so `path` may be anywhere that passes the check above. Directories created for `path` get mode `0755`.
 
 ## Options
 
@@ -78,7 +80,7 @@ Whether to enable the `ageism-decrypt` service.
 | `source` | string | Path to the deployed secret, e.g. `/var/lib/ageism/sha256-<sha256>.<ID>.age`. |
 | `path` | string | Destination of the decrypted secret. Missing parent directories are created. Every directory on the path must be owned by root and not writable by group or others. |
 | `owner` | string | Owner of the decrypted file, as accepted by `chown` (e.g. `user` or `user:group`). |
-| `mode` | string | Octal file mode, e.g. `"0400"`. |
+| `mode` | string | Octal file mode of three or four digits, e.g. `"0400"`. |
 
 ### `services.ageism.settings.agePackage`
 

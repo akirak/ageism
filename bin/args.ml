@@ -53,9 +53,15 @@ let secrets_root_a =
     & opt (some string) None
     & info ["secrets-root"] ~docv:"DIR" ~doc ~env )
 
+let host_conv =
+  Arg.conv
+    ( (fun s ->
+        Result.map_error (fun msg -> `Msg msg) (Ageism.check_host_name s) )
+    , Format.pp_print_string )
+
 let hosts_a =
   let doc = "Host to which secrets are deployed." in
-  Arg.(value & pos_all string [] & info [] ~docv:"HOST" ~doc)
+  Arg.(value & pos_all host_conv [] & info [] ~docv:"HOST" ~doc)
 
 let age_exe_a =
   let doc = "Use $(docv) as the age executable." in

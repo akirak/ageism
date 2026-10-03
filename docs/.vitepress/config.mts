@@ -25,6 +25,10 @@ export default withMermaid(
 						{ text: "Installation", link: "/guide/installation" },
 						{ text: "Getting started", link: "/guide/getting-started" },
 						{ text: "How it works", link: "/guide/how-it-works" },
+						{
+							text: "Comparison with agenix-rekey",
+							link: "/guide/comparison",
+						},
 						{ text: "NixOS module", link: "/guide/nixos-module" },
 						{
 							text: "systemd credentials",

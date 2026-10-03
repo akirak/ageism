@@ -17,4 +17,4 @@ It manages encrypted secrets in a repository and deploys them to target hosts, b
 
 ## Inspirations
 
-- [agenix-rekey](https://github.com/oddlama/agenix-rekey)
+- [agenix-rekey](https://github.com/oddlama/agenix-rekey). See [Comparison with agenix-rekey](./comparison).

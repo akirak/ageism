@@ -39,7 +39,9 @@ function identityId(source) {
 
 let failed = 0;
 
-for (const [_, { source, path: dest, owner, mode }] of Object.entries(secrets)) {
+for (const [_, { source, path: dest, owner, mode }] of Object.entries(
+	secrets,
+)) {
 	if (fs.existsSync(dest)) {
 		console.log(`skip ${dest} (already exists)`);
 		continue;

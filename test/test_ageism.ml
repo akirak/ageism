@@ -353,6 +353,41 @@ let test_deploy_age_exe env () =
   check int "encrypt called once" 1
     (count_matching "--encrypt" (dir ^ "/age.log"))
 
+let test_deploy_localhost_binary_identity env () =
+  with_temp_dir
+  @@ fun dir ->
+  mkdir_p (dir ^ "/secrets/testhost") ;
+  mkdir_p (dir ^ "/dest") ;
+  (* Long enough to span several base64 lines, with every byte value except
+     NUL and newline, which the sed-based fake age can't pass through. *)
+  let key =
+    String.concat ""
+      (List.init 3 (fun _ ->
+           String.init 254 (fun i ->
+               let c = Char.chr (i + 1) in
+               if c = '\n' then 'x' else c ) ) )
+    ^ "\n"
+  in
+  write_identity ~dir ~host:"testhost" ("CIPHER:" ^ key) ;
+  write_file (dir ^ "/recip.txt") "age1fake\n" ;
+  make_script ~dir "sudo" fake_sudo ;
+  make_script ~dir "age" fake_age ;
+  Unix.putenv "AGEISM_LOG" (dir ^ "/age.log") ;
+  let old_tmpdir = Filename.get_temp_dir_name () in
+  (* Nothing may be staged in a local temporary file. *)
+  Filename.set_temp_dir_name (dir ^ "/no-such-tmp") ;
+  Fun.protect ~finally:(fun () -> Filename.set_temp_dir_name old_tmpdir)
+  @@ fun () ->
+  with_path ~dir
+  @@ fun () ->
+  check_ok "deploy succeeds"
+    (Ageism.deploy ~env (e2e_config ~env ~dir ())
+       [ Ageism.Localhost
+           { installDir= Some (fs_path ~env (dir ^ "/dest"))
+           ; hostName= Some "testhost" } ] ) ;
+  check string "identity installed byte for byte" key
+    (read_file (dir ^ "/dest/identity." ^ id_of ("CIPHER:" ^ key)))
+
 let test_deploy_resolves_hostname env () =
   with_temp_dir
   @@ fun dir ->
@@ -781,6 +816,8 @@ let () =
         ; test_case "close" `Quick (with_env test_shell_close) ] )
     ; ( "deploy"
       , [ test_case "localhost" `Quick (with_env test_deploy_localhost)
+        ; test_case "localhost binary identity" `Quick
+            (with_env test_deploy_localhost_binary_identity)
         ; test_case "age exe override" `Quick (with_env test_deploy_age_exe)
         ; test_case "resolves hostname" `Quick
             (with_env test_deploy_resolves_hostname)

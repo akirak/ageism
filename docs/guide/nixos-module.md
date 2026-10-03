@@ -56,11 +56,14 @@ in
 
 For each secret, the service:
 
-1. Skips it if `path` already exists.
-2. Derives the identity ID from the `source` filename and decrypts it with `identity.<ID>` in the same directory.
-3. Writes the plaintext to `path`, then applies `owner` (via `chown`) and `mode` (via `chmod`).
+1. Checks that the parent directory of `path` is safe (see below), creating it if missing.
+2. Skips the secret if `path` is already a regular file, and fails if it is anything else, such as a symlink.
+3. Derives the identity ID from the `source` filename and decrypts it with `identity.<ID>` in the same directory.
+4. Decrypts the plaintext into a private temporary directory next to `path`, applies `owner` (via `chown`) and `mode` (via `chmod`), and renames the file to `path`.
 
 The service fails if any secret could not be installed, after attempting all of them.
+
+Because the service runs as root, the parent directory of `path` and all of its ancestors (after resolving symlinks) must be owned by root and must not be writable by group or others. Otherwise another user could redirect the write or the `chown` to a different file. This rules out locations such as home directories and `/tmp`. Put secrets under a root-owned directory such as `/run/ageism`, and use [systemd credentials](./systemd-credentials) or a symlink to make them available elsewhere.
 
 ## Options
 
@@ -73,7 +76,7 @@ Whether to enable the `ageism-decrypt` service.
 | Option | Type | Description |
 |---|---|---|
 | `source` | string | Path to the deployed secret, e.g. `/var/lib/ageism/sha256-<sha256>.<ID>.age`. |
-| `path` | string | Destination of the decrypted secret. Parent directories are created. |
+| `path` | string | Destination of the decrypted secret. Missing parent directories are created. Every directory on the path must be owned by root and not writable by group or others. |
 | `owner` | string | Owner of the decrypted file, as accepted by `chown` (e.g. `user` or `user:group`). |
 | `mode` | string | Octal file mode, e.g. `"0400"`. |
 

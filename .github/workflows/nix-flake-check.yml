@@ -27,9 +27,8 @@ jobs:
     name: Build on ${{ matrix.os }}
     strategy:
       matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
+        # Skip macOS on pull requests to save CI time; it still runs on push.
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -37,9 +36,12 @@ jobs:
           persist-credentials: false
 
       - uses: nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c # v35
-        with:
-          nix_conf: |
-            accept-flake-config = true
+        # The flake.nix currently doesn't contain config, so disable
+        # accept-flake-config for now.
+        #
+        # with:
+        #   nix_conf: |
+        #     accept-flake-config = true
 
       - name: Check the flake
         run: nix flake check -L

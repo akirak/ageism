@@ -13,6 +13,12 @@
 //   age --decrypt -i <source-dir>/identity.<ID> -o TMPFILE <source>
 // and installed at `path` with the given owner and mode.
 //
+// The script runs as root, so the parent directory of `path` and all of its
+// ancestors (after resolving symlinks) must be owned by the current user and
+// must not be writable by group or others. Otherwise another user could
+// redirect the write elsewhere. The plaintext gets its owner and mode in a
+// private temporary directory, then is renamed into place.
+//
 // Usage: decrypt-secrets.mjs MANIFEST.json
 
 import { execFileSync } from "node:child_process";
@@ -29,6 +35,8 @@ const ageBin = process.env.AGE_BIN || "age";
 
 const secrets = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
 
+const uid = process.getuid();
+
 // Extract the identity ID from a deployed secret filename such as
 // "sha256-<sha256>.<ID>.age" -> "<ID>"
 function identityId(source) {
@@ -37,16 +45,43 @@ function identityId(source) {
 	return parts[parts.length - 2];
 }
 
+function assertTrusted(dir) {
+	const st = fs.lstatSync(dir);
+	if (!st.isDirectory()) throw new Error(`${dir} is not a directory`);
+	if (st.uid !== uid) throw new Error(`${dir} is not owned by uid ${uid}`);
+	if (st.mode & 0o022) throw new Error(`${dir} is writable by group or others`);
+}
+
+// Resolve `dir` to a canonical path whose every component is a trusted
+// directory, creating missing components.
+function trustedDirectory(dir) {
+	const missing = [];
+	let existing = path.resolve(dir);
+	while (!fs.existsSync(existing)) {
+		missing.unshift(path.basename(existing));
+		existing = path.dirname(existing);
+	}
+	let current = fs.realpathSync(existing);
+	let ancestor = current;
+	for (;;) {
+		assertTrusted(ancestor);
+		const parent = path.dirname(ancestor);
+		if (parent === ancestor) break;
+		ancestor = parent;
+	}
+	for (const name of missing) {
+		current = path.join(current, name);
+		fs.mkdirSync(current, { mode: 0o755 });
+		assertTrusted(current);
+	}
+	return current;
+}
+
 let failed = 0;
 
-for (const [_, { source, path: dest, owner, mode }] of Object.entries(
+for (const [_, { source, path: target, owner, mode }] of Object.entries(
 	secrets,
 )) {
-	if (fs.existsSync(dest)) {
-		console.log(`skip ${dest} (already exists)`);
-		continue;
-	}
-
 	const id = identityId(source);
 	if (!id) {
 		console.error(`error: cannot determine identity ID from source: ${source}`);
@@ -55,26 +90,37 @@ for (const [_, { source, path: dest, owner, mode }] of Object.entries(
 	}
 	const identity = path.join(path.dirname(source), `identity.${id}`);
 
-	// Decrypt into a temp file on the same filesystem as the destination.
-	fs.mkdirSync(path.dirname(dest), { recursive: true });
-	const tmpDir = fs.mkdtempSync(path.join(path.dirname(dest), ".ageism-"));
-	const tmpFile = path.join(tmpDir, "secret");
-
+	let tmpDir;
 	try {
+		const dir = trustedDirectory(path.dirname(target));
+		const dest = path.join(dir, path.basename(target));
+
+		const existing = fs.lstatSync(dest, { throwIfNoEntry: false });
+		if (existing?.isFile()) {
+			console.log(`skip ${target} (already exists)`);
+			continue;
+		}
+		if (existing) throw new Error(`${dest} exists and is not a regular file`);
+
+		// Decrypt into a private directory on the same filesystem as the
+		// destination, so the rename below is atomic.
+		tmpDir = fs.mkdtempSync(path.join(dir, ".ageism-"));
+		const tmpFile = path.join(tmpDir, "secret");
+
 		execFileSync(ageBin, ["--decrypt", "-i", identity, "-o", tmpFile, source], {
 			stdio: ["pipe", "pipe", "pipe"],
 		});
-		fs.writeFileSync(dest, fs.readFileSync(tmpFile), {
-			mode: parseInt(mode, 8),
-		});
-		execFileSync("chown", [owner, dest]);
-		execFileSync("chmod", [mode, dest]);
-		console.log(`installed ${dest}`);
+		execFileSync("chown", ["--", owner, tmpFile]);
+		execFileSync("chmod", ["--", mode, tmpFile]);
+		fs.renameSync(tmpFile, dest);
+		console.log(`installed ${target}`);
 	} catch (err) {
 		failed++;
-		console.error(`error: ${source} -> ${dest}: ${err.stderr || err.message}`);
+		console.error(
+			`error: ${source} -> ${target}: ${err.stderr || err.message}`,
+		);
 	} finally {
-		fs.rmSync(tmpDir, { recursive: true, force: true });
+		if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
 	}
 }
 

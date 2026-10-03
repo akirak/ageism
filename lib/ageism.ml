@@ -14,7 +14,8 @@ type 'path config =
   ; identityFile: 'path
   ; secretsRoot: 'path option
   ; elevationStrategy: elevation
-  ; ageExe: string }
+  ; ageExe: string
+  ; prune: bool }
 
 (* Result of a deployment: the names of the targets that failed, or [Success]
    if none did. *)
@@ -195,13 +196,14 @@ let target_name = function
   | Localhost {hostName= None; _} -> "localhost"
 
 (* Everything needed to finish a target's deployment: the decrypted host
-   identity and the missing secrets already decrypted, plus the name each
-   secret has on the target for the index file. *)
+   identity and the missing secrets already decrypted, the files to prune,
+   plus the name each secret has on the target for the index file. *)
 type plan =
   { plan_conn: connection
   ; plan_identity: (string * string) option
   ; plan_pending: (string * string) list
-  ; plan_names: (string * string) list }
+  ; plan_names: (string * string) list
+  ; plan_stale: string list }
 
 (* Close the target's connection: exit the interactive shell for localhost,
    or ask the SSH multiplexing master to exit and remove its socket
@@ -291,10 +293,33 @@ let prepare_target ~env ~cache ~config ~secrets_root conn =
         , name_of sum ) )
       secrets
   in
-  {plan_conn= conn; plan_identity; plan_pending; plan_names}
+  (* With [prune], the deployed secrets not in [plan_names] and the
+     identities that none of the remaining secrets use are removed. Other
+     files are left alone. Nothing is pruned for a host without a secrets
+     directory, so a wrong --secrets-root cannot wipe the target. *)
+  let plan_stale =
+    if not config.prune then []
+    else if not (Path.is_directory Path.(secrets_root / conn.conn_name)) then (
+      traceln "%s: no secrets directory, not pruning" conn.conn_name ;
+      [] )
+    else
+      let kept = List.map snd plan_names in
+      let ids =
+        Option.to_list id @ List.filter_map Secrets.id_of_secret_name kept
+      in
+      List.filter
+        (fun name ->
+          match Secrets.id_of_identity_name name with
+          | Some i -> not (List.mem i ids)
+          | None ->
+              Secrets.sum_of_name name <> None && not (List.mem name kept) )
+        entries
+  in
+  {plan_conn= conn; plan_identity; plan_pending; plan_names; plan_stale}
 
 (* Deployment phase: upload the host identity, re-encrypt the decrypted
-   secrets for the target and upload them over its shell. *)
+   secrets for the target and upload them over its shell, then remove the
+   stale files. *)
 let deploy_target ~env ~config plan =
   let conn = plan.plan_conn in
   let recipient_file = recipient_file_for config conn.conn_name in
@@ -311,6 +336,17 @@ let deploy_target ~env ~config plan =
       upload ~env conn ~name ~data:ciphertext ;
       traceln "%s: installed %s" conn.conn_name name )
     plan.plan_pending ;
+  if plan.plan_stale <> [] then (
+    ignore
+      (run_command ~env conn
+         ( "rm -f -- "
+         ^ String.concat " "
+             (List.map
+                (fun name -> Filename.quote (conn.conn_dir ^ "/" ^ name))
+                plan.plan_stale ) ) ) ;
+    List.iter
+      (fun name -> traceln "%s: removed %s" conn.conn_name name)
+      plan.plan_stale ) ;
   save_index ~config conn plan.plan_names
 
 let deploy ~env config targets =

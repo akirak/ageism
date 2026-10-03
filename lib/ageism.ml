@@ -148,10 +148,35 @@ let recipient_file_for config host_name =
   | RecipientFile file -> file
   | RecipientDir dir -> Path.(dir / (host_name ^ ".txt"))
 
+(* Base64-encode [data] in lines of 76 characters. Every line has a length
+   that is a multiple of 4, so none of them can be a 3-letter heredoc
+   delimiter. *)
+let base64_lines data =
+  let alphabet =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+  in
+  let len = String.length data in
+  let out = Buffer.create (((len + 2) / 3 * 4 * 77 / 76) + 1) in
+  let byte i = if i < len then Char.code data.[i] else 0 in
+  let rec loop i =
+    if i < len then begin
+      let n = (byte i lsl 16) lor (byte (i + 1) lsl 8) lor byte (i + 2) in
+      let digit k = alphabet.[(n lsr (18 - (6 * k))) land 63] in
+      Buffer.add_char out (digit 0) ;
+      Buffer.add_char out (digit 1) ;
+      Buffer.add_char out (if i + 1 < len then digit 2 else '=') ;
+      Buffer.add_char out (if i + 2 < len then digit 3 else '=') ;
+      if (i + 3) mod 57 = 0 || i + 3 >= len then Buffer.add_char out '\n' ;
+      loop (i + 3)
+    end
+  in
+  loop 0 ; Buffer.contents out
+
 (* Write [data] to [conn_dir]/[name] on the target with mode 0600. For a
    remote host the raw bytes are streamed to [cat] over the multiplexed SSH
-   connection; on localhost the data is staged in a temporary file that the
-   elevated shell copies into place. *)
+   connection; on localhost they are passed base64-encoded in a heredoc to
+   the elevated shell, so that the plaintext host identity never touches the
+   local disk. *)
 let upload ~env conn ~name ~data =
   let dest = conn.conn_dir ^ "/" ^ name in
   match conn.conn_kind with
@@ -159,18 +184,10 @@ let upload ~env conn ~name ~data =
       Process.run (Stdenv.process_mgr env) ~stdin:(Flow.string_source data)
         (ssh_args ~sock host ("umask 077 && cat > " ^ Filename.quote dest))
   | Local shell ->
-      let tmp_path =
-        Path.(Stdenv.fs env / Filename.temp_file "ageism" ".age")
-      in
-      Fun.protect
-        ~finally:(fun () -> Path.unlink ~missing_ok:true tmp_path)
-        (fun () ->
-          Path.save ~create:(`Or_truncate 0o600) tmp_path data ;
-          ignore
-            (Shell.run_exn shell
-               (Printf.sprintf "umask 077 && cat -- %s > %s"
-                  (Filename.quote (Path.native_exn tmp_path))
-                  (Filename.quote dest) ) ) )
+      ignore
+        (Shell.run_exn shell
+           (Printf.sprintf "umask 077 && base64 --decode > %s <<'EOF'\n%sEOF"
+              (Filename.quote dest) (base64_lines data) ) )
 
 (* Write [indexOutDir]/[hostName].json: an object mapping each source
    basename (without the .age suffix) to the deployed basename

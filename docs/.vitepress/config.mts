@@ -8,6 +8,10 @@ export default withMermaid(
 		base: "/ageism/",
 		cleanUrls: true,
 		lastUpdated: false,
+		vite: {
+			// Pre-bundle Mermaid with its CommonJS dependencies for the dev server.
+			optimizeDeps: { include: ["mermaid"] },
+		},
 		themeConfig: {
 			nav: [
 				{ text: "Guide", link: "/guide/introduction" },

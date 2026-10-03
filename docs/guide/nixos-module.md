@@ -84,3 +84,7 @@ The age implementation used for decryption (`age` or `rage`). Defaults to `pkgs.
 ### `services.ageism.settings.agePlugins`
 
 A list of extra packages (e.g. age plugins) added to the service's `PATH`.
+
+## Next steps
+
+- Pass secrets to services without changing file ownership by using [systemd credentials](./systemd-credentials).

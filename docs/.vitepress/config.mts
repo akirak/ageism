@@ -20,6 +20,10 @@ export default defineConfig({
 					{ text: "Getting started", link: "/guide/getting-started" },
 					{ text: "How it works", link: "/guide/how-it-works" },
 					{ text: "NixOS module", link: "/guide/nixos-module" },
+					{
+						text: "systemd credentials",
+						link: "/guide/systemd-credentials",
+					},
 				],
 			},
 			{

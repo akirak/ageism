@@ -27,6 +27,8 @@ recipients/
 - `identity.age` is reserved. It is the host's own age identity (private key), encrypted like any other secret. A host with secrets but no `identity.age` cannot be deployed to.
 - `recipients/<host>.txt` contains the host's age recipient (public key), i.e. the public half of the identity in `identity.age`.
 
+See [Generating a host key](./generating-a-key) to create these two files with `age`, `rage`, or a YubiKey.
+
 ## Deploy to remote hosts
 
 Pass host names as positional arguments to deploy over SSH. `ageism` connects as `root@<host>`.

@@ -35,6 +35,10 @@ export default defineConfig({
 					{ text: "Introduction", link: "/guide/introduction" },
 					{ text: "Installation", link: "/guide/installation" },
 					{ text: "Getting started", link: "/guide/getting-started" },
+					{
+						text: "Generating a host key",
+						link: "/guide/generating-a-key",
+					},
 					{ text: "How it works", link: "/guide/how-it-works" },
 					{
 						text: "Comparison with agenix-rekey",

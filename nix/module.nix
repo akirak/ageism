@@ -56,7 +56,7 @@ in
   config = lib.mkIf cfg.enable {
     systemd.tmpfiles.rules = [ "d /run/ageism 0755 root root -" ];
 
-    systemd.services.ageism-decrypt = {
+    systemd.services.ageism-secrets = {
       wantedBy = [ "multi-user.target" ];
       description = "Decrypt age secrets";
       reloadTriggers = [ indexPath ];

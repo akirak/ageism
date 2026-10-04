@@ -15,7 +15,7 @@ agenix-rekey makes the rekeyed secrets part of the system configuration, either 
 | Delivery to the host | `ageism` over SSH (or `sudo`/`run0` for localhost) | The system closure | The system closure |
 | Building needs the master key | No | No | Yes, or the derivation must be uploaded |
 | Stale rekeyed secrets | Detected by content hash on the next `ageism` run | The build fails and asks you to run `agenix rekey` | Same as `local` |
-| Decryption on the host | `ageism-decrypt.service`, a oneshot unit | agenix, during activation | Same as `local` |
+| Decryption on the host | `ageism-secrets.service`, a oneshot unit | agenix, during activation | Same as `local` |
 | Secret generators | No | Yes | Yes |
 | Editing helpers | No, use `age` directly | `agenix edit`, `agenix view` | Same as `local` |
 | Platforms | NixOS | NixOS, nix-darwin | NixOS, nix-darwin |
@@ -43,7 +43,7 @@ Old rekeyed secrets and identities stay in `/var/lib/ageism` until you deploy wi
 
 With agenix-rekey, any deployment tool that copies the system closure delivers the secrets.
 
-ageism adds a deployment step. Run `ageism` to transfer the secrets and update the index files, then rebuild. Remote hosts must accept SSH as `root`. Nothing checks at build time that the index files match the deployed secrets. If you rebuild with an index entry that was never deployed, `ageism-decrypt.service` fails on the host.
+ageism adds a deployment step. Run `ageism` to transfer the secrets and update the index files, then rebuild. Remote hosts must accept SSH as `root`. Nothing checks at build time that the index files match the deployed secrets. If you rebuild with an index entry that was never deployed, `ageism-secrets.service` fails on the host.
 
 In exchange, `ageism` deploys to several hosts concurrently with a single SSH connection each. A failure on one host does not stop the others.
 
@@ -57,7 +57,7 @@ ageism manages its own age identity for each host. You generate it, keep it encr
 
 agenix-rekey relies on agenix, which decrypts secrets during system activation into a new generation under `/run/agenix.d` and points `/run/agenix` at it. Secrets are available to activation scripts and replaced on every switch.
 
-ageism decrypts in `ageism-decrypt.service`, a oneshot unit started by `multi-user.target`. Order consumers after it (see [systemd credentials](./systemd-credentials#ordering)). Secrets are not available during activation. ageism also skips a secret whose `path` already exists, so a changed secret with the same `path` is installed only after the file is removed, e.g. by rebooting when it is under `/run`.
+ageism decrypts in `ageism-secrets.service`, a oneshot unit started by `multi-user.target`. Order consumers after it (see [systemd credentials](./systemd-credentials#ordering)). Secrets are not available during activation. ageism also skips a secret whose `path` already exists, so a changed secret with the same `path` is installed only after the file is removed, e.g. by rebooting when it is under `/run`.
 
 ### Features ageism does not have
 

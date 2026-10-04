@@ -1,6 +1,6 @@
 # NixOS module
 
-The flake exports a NixOS module as `nixosModules.default`. It adds a oneshot systemd service, `ageism-decrypt`, that decrypts deployed secrets into their final locations at boot (and on reload whenever the secret list changes).
+The flake exports a NixOS module as `nixosModules.default`. It adds a oneshot systemd service, `ageism-secrets`, that decrypts deployed secrets into their final locations at boot (and on reload whenever the secret list changes).
 
 ## Setup
 
@@ -71,7 +71,7 @@ The service runs with `UMask=0077` and a systemd sandbox: no network (only `AF_U
 
 ### `services.ageism.enable`
 
-Whether to enable the `ageism-decrypt` service.
+Whether to enable the `ageism-secrets` service.
 
 ### `services.ageism.secrets.<name>`
 

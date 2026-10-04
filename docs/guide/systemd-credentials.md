@@ -31,8 +31,8 @@ in
 
   systemd.services.my-app = {
     wantedBy = [ "multi-user.target" ];
-    wants = [ "ageism-decrypt.service" ];
-    after = [ "ageism-decrypt.service" ];
+    wants = [ "ageism-secrets.service" ];
+    after = [ "ageism-secrets.service" ];
 
     serviceConfig = {
       DynamicUser = true;
@@ -49,11 +49,11 @@ in
 
 ## Ordering
 
-`ageism-decrypt.service` is a oneshot service. Order consumers after it with `after`, and pull it in with `wants`, so the decrypted file exists when systemd loads the credential. Without the ordering, the service can start before the file exists, and `LoadCredential=` fails.
+`ageism-secrets.service` is a oneshot service. Order consumers after it with `after`, and pull it in with `wants`, so the decrypted file exists when systemd loads the credential. Without the ordering, the service can start before the file exists, and `LoadCredential=` fails.
 
 ## Updating a secret
 
-`ageism-decrypt` skips a secret whose `path` already exists. If a secret changes but keeps the same `path`, the old plaintext stays in place until the file is removed. Keeping `path` under `/run` (a tmpfs) means it is cleared on reboot. Restart consuming services after updating so they load the new credential.
+`ageism-secrets` skips a secret whose `path` already exists. If a secret changes but keeps the same `path`, the old plaintext stays in place until the file is removed. Keeping `path` under `/run` (a tmpfs) means it is cleared on reboot. Restart consuming services after updating so they load the new credential.
 
 ## Encrypted credentials
 

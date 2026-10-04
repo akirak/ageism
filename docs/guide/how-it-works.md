@@ -27,7 +27,7 @@ flowchart LR
 
 1. On the client, `ageism` decrypts the secrets in the repository. The plaintext is only held in memory.
 2. `ageism` re-encrypts the plaintext to the host's key and transfers the result to `/var/lib/ageism` on the target.
-3. On the target, `ageism-decrypt.service` from the NixOS module decrypts the secrets into the paths declared in `services.ageism.secrets`, such as files under `/run/ageism`.
+3. On the target, `ageism-secrets.service` from the NixOS module decrypts the secrets into the paths declared in `services.ageism.secrets`, such as files under `/run/ageism`.
 4. Services read the plaintext files directly or through [systemd credentials](./systemd-credentials).
 
 The rest of this page describes each phase of a deployment.

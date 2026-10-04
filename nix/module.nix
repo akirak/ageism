@@ -7,7 +7,7 @@
 let
   cfg = config.services.ageism;
 
-  indexPath = pkgs.writers.writeJSON "secret-index" cfg.secrets;
+  indexPath = pkgs.writers.writeJSON "secret-index.json" cfg.secrets;
 in
 
 {

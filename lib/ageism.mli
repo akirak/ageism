@@ -14,7 +14,8 @@ type 'path config =
   ; secretsRoot: 'path option
   ; elevationStrategy: elevation
   ; ageExe: string
-  ; prune: bool }
+  ; prune: bool
+  ; recursive: bool }
 
 (** Result of {!deploy}. [Failed names] lists the targets whose deployment
     failed; other targets were still deployed. *)

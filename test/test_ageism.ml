@@ -64,7 +64,7 @@ let with_shell env fn =
 
 let fs_path ~env str = Path.(Stdenv.fs env / str)
 
-let e2e_config ?(prune = false) ~env ~dir () =
+let e2e_config ?(prune = false) ?(recursive = false) ~env ~dir () =
   Ageism.
     { indexOutDir= None
     ; recipient= RecipientFile (fs_path ~env (dir ^ "/recip.txt"))
@@ -72,7 +72,8 @@ let e2e_config ?(prune = false) ~env ~dir () =
     ; secretsRoot= Some (fs_path ~env (dir ^ "/secrets"))
     ; elevationStrategy= Sudo
     ; ageExe= "age"
-    ; prune }
+    ; prune
+    ; recursive }
 
 (* The identity ID for an encrypted identity file with the given contents. *)
 let id_of data = Secrets.id_of_sum (Secrets.sha256sum data)
@@ -189,6 +190,33 @@ let test_list env () =
     (Option.map fst (Secrets.identity ~root "host1")) ;
   check bool "unknown host has no identity" true
     (Secrets.identity ~root "nohost" = None)
+
+let test_list_recursive env () =
+  with_temp_dir
+  @@ fun dir ->
+  mkdir_p (dir ^ "/secrets/host1/sub/nested") ;
+  write_file (dir ^ "/secrets/host1/a.age") "root-secret\n" ;
+  write_file (dir ^ "/secrets/host1/identity.age") "CIPHER:key\n" ;
+  write_file (dir ^ "/secrets/host1/sub/b.age") "sub-secret\n" ;
+  write_file (dir ^ "/secrets/host1/sub/nested/c.age") "nested-secret\n" ;
+  write_file (dir ^ "/secrets/host1/sub/skip.txt") "ignored\n" ;
+  let root = fs_path ~env (dir ^ "/secrets") in
+  let non_rec = Secrets.list ~recursive:false ~root "host1" in
+  check int "non-recursive sees only top-level secret" 1
+    (List.length non_rec) ;
+  check (list string) "non-recursive paths" ["a.age"] (List.map snd non_rec) ;
+  let rec_entries = Secrets.list ~recursive:true ~root "host1" in
+  check int "recursive sees all three secrets" 3 (List.length rec_entries) ;
+  check (list string) "recursive relative paths"
+    ["a.age"; "sub/b.age"; "sub/nested/c.age"]
+    (List.map snd rec_entries) ;
+  let sums = List.map fst rec_entries in
+  check bool "a.age sum" true
+    (List.mem (Secrets.sha256sum "root-secret\n") sums) ;
+  check bool "b.age sum" true
+    (List.mem (Secrets.sha256sum "sub-secret\n") sums) ;
+  check bool "c.age sum" true
+    (List.mem (Secrets.sha256sum "nested-secret\n") sums)
 
 let test_decrypt_caches env () =
   with_temp_dir
@@ -798,6 +826,111 @@ let test_deploy_prune_requires_secrets_dir env () =
   check bool "identity kept" true
     (Sys.file_exists (dir ^ "/dest/identity.12345678"))
 
+let test_deploy_recursive env () =
+  with_temp_dir
+  @@ fun dir ->
+  mkdir_p (dir ^ "/repo") ;
+  mkdir_p (dir ^ "/secrets/testhost/sub/nested") ;
+  mkdir_p (dir ^ "/dest") ;
+  write_file (dir ^ "/repo/a.age") "CIPHER:aaa\n" ;
+  write_file (dir ^ "/repo/b.age") "CIPHER:bbb\n" ;
+  write_file (dir ^ "/repo/c.age") "CIPHER:ccc\n" ;
+  Unix.symlink "../../repo/a.age" (dir ^ "/secrets/testhost/a.age") ;
+  Unix.symlink "../../../repo/b.age" (dir ^ "/secrets/testhost/sub/b.age") ;
+  Unix.symlink "../../../../repo/c.age"
+    (dir ^ "/secrets/testhost/sub/nested/c.age") ;
+  write_identity ~dir ~host:"testhost" "CIPHER:hostkey\n" ;
+  write_file (dir ^ "/recip.txt") "age1fake\n" ;
+  make_script ~dir "sudo" fake_sudo ;
+  make_script ~dir "age" fake_age ;
+  Unix.putenv "AGEISM_LOG" (dir ^ "/age.log") ;
+  with_path ~dir
+  @@ fun () ->
+  let config =
+    { (e2e_config ~recursive:true ~env ~dir ()) with
+      Ageism.indexOutDir= Some (fs_path ~env (dir ^ "/index")) }
+  in
+  let target =
+    Ageism.Localhost
+      { installDir= Some (fs_path ~env (dir ^ "/dest"))
+      ; hostName= Some "testhost" }
+  in
+  check_ok "deploy succeeds" (Ageism.deploy ~env config [target]) ;
+  let id = id_of "CIPHER:hostkey\n" in
+  let sum_a = Secrets.sha256sum "CIPHER:aaa\n" in
+  let sum_b = Secrets.sha256sum "CIPHER:bbb\n" in
+  let sum_c = Secrets.sha256sum "CIPHER:ccc\n" in
+  let name_a = "sha256-" ^ sum_a ^ "." ^ id ^ ".age" in
+  let name_b = "sub/sha256-" ^ sum_b ^ "." ^ id ^ ".age" in
+  let name_c = "sub/nested/sha256-" ^ sum_c ^ "." ^ id ^ ".age" in
+  check string "root secret installed" "REKEYED:aaa\n"
+    (read_file (dir ^ "/dest/" ^ name_a)) ;
+  check string "sub secret installed" "REKEYED:bbb\n"
+    (read_file (dir ^ "/dest/" ^ name_b)) ;
+  check string "nested secret installed" "REKEYED:ccc\n"
+    (read_file (dir ^ "/dest/" ^ name_c)) ;
+  check int "root secret mode" 0o600
+    (Unix.stat (dir ^ "/dest/" ^ name_a)).Unix.st_perm ;
+  check int "sub secret mode" 0o600
+    (Unix.stat (dir ^ "/dest/" ^ name_b)).Unix.st_perm ;
+  check int "nested secret mode" 0o600
+    (Unix.stat (dir ^ "/dest/" ^ name_c)).Unix.st_perm ;
+  let index = read_file (dir ^ "/index/testhost.json") in
+  let contains frag =
+    let n = String.length frag in
+    let rec loop i =
+      i + n <= String.length index
+      && (String.sub index i n = frag || loop (i + 1))
+    in
+    loop 0
+  in
+  check bool "maps a to name_a" true
+    (contains (Printf.sprintf "\"a\": %S" name_a)) ;
+  check bool "maps sub/b to name_b" true
+    (contains (Printf.sprintf "\"sub/b\": %S" name_b)) ;
+  check bool "maps sub/nested/c to name_c" true
+    (contains (Printf.sprintf "\"sub/nested/c\": %S" name_c)) ;
+  (* Redeployment is a no-op *)
+  check_ok "redeploy succeeds" (Ageism.deploy ~env config [target]) ;
+  check int "no extra decrypts on redeploy" 4
+    (count_matching "--decrypt" (dir ^ "/age.log")) ;
+  (* Now prune: remove c.age from secrets *)
+  Unix.unlink (dir ^ "/secrets/testhost/sub/nested/c.age") ;
+  let config_prune = {config with Ageism.prune= true} in
+  check_ok "prune deploy succeeds" (Ageism.deploy ~env config_prune [target]) ;
+  check bool "c was pruned" false (Sys.file_exists (dir ^ "/dest/" ^ name_c)) ;
+  check bool "a remains" true (Sys.file_exists (dir ^ "/dest/" ^ name_a)) ;
+  check bool "b remains" true (Sys.file_exists (dir ^ "/dest/" ^ name_b))
+
+let test_deploy_non_recursive_skips_subdirs env () =
+  with_temp_dir
+  @@ fun dir ->
+  mkdir_p (dir ^ "/secrets/testhost/sub") ;
+  mkdir_p (dir ^ "/dest") ;
+  write_file (dir ^ "/secrets/testhost/a.age") "CIPHER:aaa\n" ;
+  write_file (dir ^ "/secrets/testhost/sub/b.age") "CIPHER:bbb\n" ;
+  write_identity ~dir ~host:"testhost" "CIPHER:hostkey\n" ;
+  write_file (dir ^ "/recip.txt") "age1fake\n" ;
+  make_script ~dir "sudo" fake_sudo ;
+  make_script ~dir "age" fake_age ;
+  Unix.putenv "AGEISM_LOG" (dir ^ "/age.log") ;
+  with_path ~dir
+  @@ fun () ->
+  let config = e2e_config ~recursive:false ~env ~dir () in
+  let target =
+    Ageism.Localhost
+      { installDir= Some (fs_path ~env (dir ^ "/dest"))
+      ; hostName= Some "testhost" }
+  in
+  check_ok "deploy succeeds" (Ageism.deploy ~env config [target]) ;
+  let id = id_of "CIPHER:hostkey\n" in
+  let sum_a = Secrets.sha256sum "CIPHER:aaa\n" in
+  let sum_b = Secrets.sha256sum "CIPHER:bbb\n" in
+  check bool "a installed" true
+    (Sys.file_exists (dir ^ "/dest/sha256-" ^ sum_a ^ "." ^ id ^ ".age")) ;
+  check bool "sub/b NOT installed" false
+    (Sys.file_exists (dir ^ "/dest/sub/sha256-" ^ sum_b ^ "." ^ id ^ ".age"))
+
 (* ---------- suite ---------- *)
 
 let () =
@@ -807,6 +940,7 @@ let () =
         ; test_case "check_host_name" `Quick test_check_host_name
         ; test_case "select_missing" `Quick test_select_missing
         ; test_case "list" `Quick (with_env test_list)
+        ; test_case "list recursive" `Quick (with_env test_list_recursive)
         ; test_case "decrypt caches by sum" `Quick
             (with_env test_decrypt_caches) ] )
     ; ( "shell"
@@ -839,4 +973,7 @@ let () =
         ; test_case "prune requires secrets dir" `Quick
             (with_env test_deploy_prune_requires_secrets_dir)
         ; test_case "rejects invalid host names" `Quick
-            (with_env test_deploy_rejects_bad_hostname) ] ) ]
+            (with_env test_deploy_rejects_bad_hostname)
+        ; test_case "recursive" `Quick (with_env test_deploy_recursive)
+        ; test_case "non-recursive skips subdirs" `Quick
+            (with_env test_deploy_non_recursive_skips_subdirs) ] ) ]

@@ -80,6 +80,18 @@ function trustedDirectory(dir) {
 	return current;
 }
 
+function findIdentity(startDir, id) {
+	let cur = path.resolve(startDir);
+	for (;;) {
+		const candidate = path.join(cur, `identity.${id}`);
+		if (fs.existsSync(candidate)) return candidate;
+		const parent = path.dirname(cur);
+		if (parent === cur) break;
+		cur = parent;
+	}
+	return path.join(startDir, `identity.${id}`);
+}
+
 let failed = 0;
 
 for (const [_, { source, path: target, owner, mode }] of Object.entries(
@@ -91,7 +103,7 @@ for (const [_, { source, path: target, owner, mode }] of Object.entries(
 		failed++;
 		continue;
 	}
-	const identity = path.join(path.dirname(source), `identity.${id}`);
+	const identity = findIdentity(path.dirname(source), id);
 
 	let tmpDir;
 	try {

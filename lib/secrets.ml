@@ -77,19 +77,45 @@ let run_capture ~env ~input args =
 
 let sha256sum data = Digestif.SHA256.(digest_string data |> to_hex)
 
-(* Pairs of (sum, path) for each *.age file under [root]/[host_name], where
-   sum is the sha256 of the dereferenced (symlink-followed) contents. The
-   reserved identity file is not a secret. *)
-let list ~root host_name =
+(* Pairs of (sum, rel_path) for each *.age file under [root]/[host_name],
+   where sum is the sha256 of the dereferenced (symlink-followed) contents,
+   and rel_path is the relative path from [root]/[host_name]. The reserved
+   identity file is not a secret. *)
+let list ?(recursive = false) ~root host_name =
   let dir = Path.(root / host_name) in
-  if Path.is_directory dir then
+  if not (Path.is_directory dir) then []
+  else if not recursive then
     Path.read_dir dir
     |> List.filter_map (fun entry ->
         if Filename.check_suffix entry ".age" && entry <> identity_file then
           let path = Path.(dir / entry) in
-          Some (sha256sum (Path.load path), path)
+          if Path.is_file path then Some (sha256sum (Path.load path), entry)
+          else None
         else None )
-  else []
+    |> List.sort (fun (_, a) (_, b) -> String.compare a b)
+  else
+    let rec scan rel_prefix cur_path visited =
+      let real =
+        try Unix.realpath (Path.native_exn cur_path)
+        with _ -> Path.native_exn cur_path
+      in
+      if List.mem real visited then []
+      else
+        let visited = real :: visited in
+        Path.read_dir cur_path |> List.sort String.compare
+        |> List.concat_map (fun entry ->
+            let rel_path =
+              if rel_prefix = "" then entry else rel_prefix ^ "/" ^ entry
+            in
+            let path = Path.(cur_path / entry) in
+            if Path.is_directory path then scan rel_path path visited
+            else if
+              Filename.check_suffix entry ".age"
+              && rel_path <> identity_file && Path.is_file path
+            then [(sha256sum (Path.load path), rel_path)]
+            else [] )
+    in
+    scan "" dir []
 
 (* The encrypted host identity of [host_name] as a (sum, path) pair, where
    sum is the sha256 of the encrypted file, or [None] if the secrets

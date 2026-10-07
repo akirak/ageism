@@ -34,7 +34,7 @@ The rest of this page describes each phase of a deployment.
 
 ## 1. Discovery and hashing
 
-`ageism` scans `--secrets-root/<host>` for `*.age` files, following symlinks, and computes the SHA-256 hash of each dereferenced source file. `identity.age` is reserved for the host's encrypted identity and is never deployed as a secret.
+`ageism` scans `--secrets-root/<host>` for `*.age` files, following symlinks, and computes the SHA-256 hash of each dereferenced source file. With `--recursive`, subdirectories are scanned recursively, retaining the directory structure on the target. `identity.age` is reserved for the host's encrypted identity and is never deployed as a secret.
 
 ## 2. Inspection
 

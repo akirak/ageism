@@ -21,6 +21,7 @@ Each `HOST` is deployed to over SSH as `root@HOST`. If no `HOST` is given, `agei
 | `--elevation=STRATEGY` | Privilege elevation strategy for localhost: `sudo` or `run0`. Defaults to `sudo`. |
 | `--age=EXE` | The `age` executable used for decryption and rekeying. Defaults to `age`, looked up in `PATH`. |
 | `--prune` | After a successful deployment, remove deployed secrets (`sha256-*`) that are no longer in the host's secrets directory, and identities (`identity.<ID>`) that no remaining secret uses. Other files are left alone. Skipped for a host without a secrets directory. |
+| `-r`, `--recursive` | Glob the secrets directory recursively and transfer secrets retaining the directory structure. |
 | `--help` | Show the command line reference. |
 | `--version` | Show version information. |
 
@@ -41,3 +42,4 @@ Every option can also be set with an environment variable. Command line options 
 | `AGEISM_ELEVATION` | `--elevation` |
 | `AGEISM_AGE` | `--age` |
 | `AGEISM_PRUNE` | `--prune` |
+| `AGEISM_RECURSIVE` | `-r`, `--recursive` |

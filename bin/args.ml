@@ -84,16 +84,25 @@ let prune_a =
   let env = Cmd.Env.info "AGEISM_PRUNE" ~doc in
   Arg.(value & flag & info ["prune"] ~doc ~env)
 
+let recursive_a =
+  let doc =
+    "Glob the secrets directory recursively and transfer secrets retaining \
+     the directory structure."
+  in
+  let env = Cmd.Env.info "AGEISM_RECURSIVE" ~doc in
+  Arg.(value & flag & info ["r"; "recursive"] ~doc ~env)
+
 let config_t =
   let open Ageism in
   let make_config indexOutDir identityFile recipientFile recipientDir
-      secretsRoot elevationStrategy ageExe prune =
+      secretsRoot elevationStrategy ageExe prune recursive =
     { indexOutDir
     ; identityFile
     ; secretsRoot
     ; elevationStrategy
     ; ageExe
     ; prune
+    ; recursive
     ; recipient=
         ( match recipientFile with
         | Some file -> RecipientFile file
@@ -105,7 +114,8 @@ let config_t =
   in
   Term.(
     const make_config $ index_out_dir $ identity_file $ recipient_file
-    $ recipient_dir $ secrets_root_a $ elevation_a $ age_exe_a $ prune_a )
+    $ recipient_dir $ secrets_root_a $ elevation_a $ age_exe_a $ prune_a
+    $ recursive_a )
 
 let targets_t =
   let open Ageism in

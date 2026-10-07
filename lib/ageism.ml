@@ -15,7 +15,8 @@ type 'path config =
   ; secretsRoot: 'path option
   ; elevationStrategy: elevation
   ; ageExe: string
-  ; prune: bool }
+  ; prune: bool
+  ; recursive: bool }
 
 (* Result of a deployment: the names of the targets that failed, or [Success]
    if none did. *)
@@ -136,12 +137,21 @@ let run_command ~env conn cmd =
         (ssh_args ~sock host cmd)
       |> List.of_seq
 
+let strip_dot_slash s =
+  if String.starts_with ~prefix:"./" s then
+    String.sub s 2 (String.length s - 2)
+  else s
+
 (* Names of the files already present on the target. *)
 let deployed_entries ~env conn =
   ignore
     (run_command ~env conn
        ("mkdir -m 600 -p -- " ^ Filename.quote conn.conn_dir) ) ;
-  run_command ~env conn ("ls -1A -- " ^ Filename.quote conn.conn_dir)
+  run_command ~env conn
+    ("cd -- " ^ Filename.quote conn.conn_dir ^ " && find . ! -type d")
+  |> List.filter_map (fun line ->
+      let line = String.trim line in
+      if line = "" then None else Some (strip_dot_slash line) )
 
 let recipient_file_for config host_name =
   match config.recipient with
@@ -179,15 +189,21 @@ let base64_lines data =
    local disk. *)
 let upload ~env conn ~name ~data =
   let dest = conn.conn_dir ^ "/" ^ name in
+  let dest_dir = Filename.dirname dest in
   match conn.conn_kind with
   | Ssh {sock; host} ->
       Process.run (Stdenv.process_mgr env) ~stdin:(Flow.string_source data)
-        (ssh_args ~sock host ("umask 077 && cat > " ^ Filename.quote dest))
+        (ssh_args ~sock host
+           (Printf.sprintf "umask 077 && mkdir -p -- %s && cat > %s"
+              (Filename.quote dest_dir) (Filename.quote dest) ) )
   | Local shell ->
       ignore
         (Shell.run_exn shell
-           (Printf.sprintf "umask 077 && base64 --decode > %s <<'EOF'\n%sEOF"
-              (Filename.quote dest) (base64_lines data) ) )
+           (Printf.sprintf
+              "umask 077 && mkdir -p -- %s && base64 --decode > %s <<'EOF'\n\
+               %sEOF"
+              (Filename.quote dest_dir) (Filename.quote dest)
+              (base64_lines data) ) )
 
 (* Write [indexOutDir]/[hostName].json: an object mapping each source
    basename (without the .age suffix) to the deployed basename
@@ -240,14 +256,11 @@ let disconnect ~env conn =
 (* Pretty-print a table of the secrets' statuses: a ballot box with check (☑)
    if the secret is already deployed on the target, or a ballot box (☐) if it
    is missing and has to be uploaded. *)
-let pp_secret_statuses ~deployed ppf secrets =
+let pp_secret_statuses ~is_deployed ppf secrets =
   let rows =
     List.map
-      (fun (sum, path) ->
-        ( Filename.chop_suffix
-            (Filename.basename (Path.native_exn path))
-            ".age"
-        , List.mem sum deployed ) )
+      (fun (sum, rel_path) ->
+        (Filename.chop_suffix rel_path ".age", is_deployed (sum, rel_path)) )
       secrets
   in
   let pp_row ppf (name, is_deployed) =
@@ -262,26 +275,38 @@ let prepare_target ~env ~cache ~config ~secrets_root conn =
   let deployed =
     List.filter_map
       (fun name ->
-        Option.map (fun sum -> (sum, name)) (Secrets.sum_of_name name) )
+        let base = Filename.basename name in
+        let dir = Filename.dirname name in
+        Option.map (fun sum -> ((dir, sum), name)) (Secrets.sum_of_name base) )
       entries
   in
-  let secrets = Secrets.list ~root:secrets_root conn.conn_name in
+  let secrets =
+    Secrets.list ~recursive:config.recursive ~root:secrets_root
+      conn.conn_name
+  in
   let identity = Secrets.identity ~root:secrets_root conn.conn_name in
   let id = Option.map (fun (sum, _) -> Secrets.id_of_sum sum) identity in
   if id = None && secrets <> [] then
     failwith
       "secrets cannot be deployed without an identity.age file in the \
        secrets directory" ;
-  let missing = Secrets.select_missing (List.map fst deployed) secrets in
+  let is_deployed (sum, rel_path) =
+    let dir = Filename.dirname rel_path in
+    List.mem_assoc (dir, sum) deployed
+  in
+  let missing = List.filter (fun s -> not (is_deployed s)) secrets in
   traceln "%s: %d/%d secret(s) to deploy" conn.conn_name
     (List.length missing) (List.length secrets) ;
-  traceln "%a" (pp_secret_statuses ~deployed:(List.map fst deployed)) secrets ;
-  (* The deployed name of [sum]: the name of the file already on the target,
-     or a new name carrying the host identity's ID. *)
-  let name_of sum =
-    match List.assoc_opt sum deployed with
+  traceln "%a" (pp_secret_statuses ~is_deployed) secrets ;
+  (* The deployed name of [sum] in [rel_path]: the name of the file already
+     on the target, or a new name carrying the host identity's ID. *)
+  let name_of sum rel_path =
+    let dir = Filename.dirname rel_path in
+    match List.assoc_opt (dir, sum) deployed with
     | Some name -> name
-    | None -> Secrets.deployed_name ~id:(Option.get id) sum
+    | None ->
+        let deployed_base = Secrets.deployed_name ~id:(Option.get id) sum in
+        if dir = "." then deployed_base else dir ^ "/" ^ deployed_base
   in
   let plan_identity =
     match identity with
@@ -297,19 +322,17 @@ let prepare_target ~env ~cache ~config ~secrets_root conn =
   in
   let plan_pending =
     List.map
-      (fun (sum, path) ->
-        ( name_of sum
+      (fun (sum, rel_path) ->
+        let path = Path.(secrets_root / conn.conn_name / rel_path) in
+        ( name_of sum rel_path
         , Secrets.decrypt ~env ~cache ~age:config.ageExe
             ~identity:config.identityFile ~sum path ) )
       missing
   in
   let plan_names =
     List.map
-      (fun (sum, path) ->
-        ( Filename.chop_suffix
-            (Filename.basename (Path.native_exn path))
-            ".age"
-        , name_of sum ) )
+      (fun (sum, rel_path) ->
+        (Filename.chop_suffix rel_path ".age", name_of sum rel_path) )
       secrets
   in
   (* With [prune], the deployed secrets not in [plan_names] and the
@@ -324,14 +347,18 @@ let prepare_target ~env ~cache ~config ~secrets_root conn =
     else
       let kept = List.map snd plan_names in
       let ids =
-        Option.to_list id @ List.filter_map Secrets.id_of_secret_name kept
+        Option.to_list id
+        @ List.filter_map
+            (fun name -> Secrets.id_of_secret_name (Filename.basename name))
+            kept
       in
       List.filter
         (fun name ->
-          match Secrets.id_of_identity_name name with
+          let base = Filename.basename name in
+          match Secrets.id_of_identity_name base with
           | Some i -> not (List.mem i ids)
           | None ->
-              Secrets.sum_of_name name <> None && not (List.mem name kept) )
+              Secrets.sum_of_name base <> None && not (List.mem name kept) )
         entries
   in
   {plan_conn= conn; plan_identity; plan_pending; plan_names; plan_stale}

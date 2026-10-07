@@ -19,7 +19,8 @@ let show_config (config : string Ageism.config) =
     ; "  identityFile: " ^ config.identityFile
     ; "  elevationStrategy: " ^ elevation
     ; "  ageExe: " ^ config.ageExe
-    ; "  prune: " ^ string_of_bool config.prune ]
+    ; "  prune: " ^ string_of_bool config.prune
+    ; "  recursive: " ^ string_of_bool config.recursive ]
 
 let main ~env (config : string Ageism.config)
     (targets : string Ageism.target list) =
@@ -40,7 +41,8 @@ let main ~env (config : string Ageism.config)
     ; identityFile= toEioPath config.identityFile
     ; elevationStrategy= config.elevationStrategy
     ; ageExe= config.ageExe
-    ; prune= config.prune }
+    ; prune= config.prune
+    ; recursive= config.recursive }
   in
   Eio.traceln "%s" (show_config config) ;
   match Ageism.(deploy ~env eio_config (List.map toEioTarget targets)) with

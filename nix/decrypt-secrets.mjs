@@ -22,22 +22,57 @@
 //
 // With --prune DIR, every subdirectory of DIR is removed before decrypting.
 //
-// Usage: decrypt-secrets.mjs MANIFEST.json [--prune DIR]
+// With --last-manifest FILE, each entry that is identical to the entry with
+// the same key in FILE is skipped, provided its target file still exists.
+// After a fully successful run, the input manifest is copied to FILE.
+//
+// Usage: decrypt-secrets.mjs MANIFEST.json [--prune DIR] [--last-manifest FILE]
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-const manifestPath = process.argv[2];
-const pruneDir = process.argv[3] === "--prune" ? process.argv[4] : null;
-if (!manifestPath || (process.argv[3] && !pruneDir) || process.argv.length > 5) {
-	console.error("usage: decrypt-secrets.mjs MANIFEST.json [--prune DIR]");
+function usage() {
+	console.error(
+		"usage: decrypt-secrets.mjs MANIFEST.json [--prune DIR] [--last-manifest FILE]",
+	);
 	process.exit(64);
 }
+
+let manifestPath = null;
+let pruneDir = null;
+let lastManifestPath = null;
+const args = process.argv.slice(2);
+for (let i = 0; i < args.length; i++) {
+	const arg = args[i];
+	if (arg === "--prune" || arg === "--last-manifest") {
+		const value = args[++i];
+		if (value === undefined) usage();
+		if (arg === "--prune") pruneDir = value;
+		else lastManifestPath = value;
+	} else if (!arg.startsWith("-") && manifestPath === null) {
+		manifestPath = arg;
+	} else {
+		usage();
+	}
+}
+if (!manifestPath) usage();
 
 const ageBin = process.env.AGE_BIN || "age";
 
 const secrets = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+
+let lastManifest = {};
+if (lastManifestPath) {
+	try {
+		lastManifest = JSON.parse(fs.readFileSync(lastManifestPath, "utf8"));
+	} catch (err) {
+		if (err.code !== "ENOENT")
+			console.error(
+				`warning: ignoring last manifest ${lastManifestPath}: ${err.message}`,
+			);
+	}
+}
 
 const uid = process.getuid();
 
@@ -84,6 +119,25 @@ function trustedDirectory(dir) {
 	return current;
 }
 
+// Shallow equality between manifest entries, which are flat objects of
+// strings.
+function sameEntry(a, b) {
+	if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+	const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+	for (const k of keys) if (a[k] !== b[k]) return false;
+	return true;
+}
+
+// Whether `target` already exists as a regular file, i.e. a previously
+// installed secret that has not been removed or replaced.
+function isInstalledFile(target) {
+	try {
+		return fs.lstatSync(target).isFile();
+	} catch {
+		return false;
+	}
+}
+
 function findIdentity(startDir, id) {
 	let cur = path.resolve(startDir);
 	for (;;) {
@@ -113,9 +167,22 @@ if (pruneDir) {
 	}
 }
 
-for (const [_, { source, path: target, owner, mode }] of Object.entries(
+for (const [name, { source, path: target, owner, mode }] of Object.entries(
 	secrets,
 )) {
+	if (
+		sameEntry(lastManifest[name], {
+			source,
+			path: target,
+			owner,
+			mode,
+		}) &&
+		isInstalledFile(target)
+	) {
+		console.log(`skipped ${target} (unchanged)`);
+		continue;
+	}
+
 	const id = identityId(source);
 	if (!id) {
 		console.error(`error: cannot determine identity ID from source: ${source}`);
@@ -156,4 +223,19 @@ for (const [_, { source, path: target, owner, mode }] of Object.entries(
 if (failed > 0) {
 	console.error(`${failed} secret(s) failed to install`);
 	process.exit(1);
+}
+
+if (lastManifestPath) {
+	try {
+		// Write via a temporary file so an interrupted run does not leave a
+		// truncated manifest that would be mistaken for installed state.
+		const tmp = `${lastManifestPath}.${process.pid}.tmp`;
+		fs.copyFileSync(manifestPath, tmp);
+		fs.renameSync(tmp, lastManifestPath);
+	} catch (err) {
+		console.error(
+			`error: cannot save last manifest to ${lastManifestPath}: ${err.message}`,
+		);
+		process.exit(1);
+	}
 }

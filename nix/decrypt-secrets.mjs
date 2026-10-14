@@ -17,17 +17,21 @@
 // ancestors (after resolving symlinks) must be owned by the current user and
 // must not be writable by group or others. Otherwise another user could
 // redirect the write elsewhere. The plaintext gets its owner and mode in a
-// private temporary directory, then is renamed into place.
+// private temporary directory, then is renamed into place, replacing any
+// existing file or symlink.
 //
-// Usage: decrypt-secrets.mjs MANIFEST.json
+// With --prune DIR, every subdirectory of DIR is removed before decrypting.
+//
+// Usage: decrypt-secrets.mjs MANIFEST.json [--prune DIR]
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
 const manifestPath = process.argv[2];
-if (!manifestPath) {
-	console.error("usage: decrypt-secrets.mjs MANIFEST.json");
+const pruneDir = process.argv[3] === "--prune" ? process.argv[4] : null;
+if (!manifestPath || (process.argv[3] && !pruneDir) || process.argv.length > 5) {
+	console.error("usage: decrypt-secrets.mjs MANIFEST.json [--prune DIR]");
 	process.exit(64);
 }
 
@@ -94,6 +98,21 @@ function findIdentity(startDir, id) {
 
 let failed = 0;
 
+if (pruneDir) {
+	try {
+		const root = trustedDirectory(pruneDir);
+		for (const ent of fs.readdirSync(root, { withFileTypes: true }))
+			if (ent.isDirectory())
+				fs.rmSync(path.join(root, ent.name), {
+					recursive: true,
+					force: true,
+				});
+	} catch (err) {
+		failed++;
+		console.error(`error: pruning ${pruneDir}: ${err.message}`);
+	}
+}
+
 for (const [_, { source, path: target, owner, mode }] of Object.entries(
 	secrets,
 )) {
@@ -111,13 +130,6 @@ for (const [_, { source, path: target, owner, mode }] of Object.entries(
 			throw new Error(`invalid mode ${JSON.stringify(mode)}`);
 		const dir = trustedDirectory(path.dirname(target));
 		const dest = path.join(dir, path.basename(target));
-
-		const existing = fs.lstatSync(dest, { throwIfNoEntry: false });
-		if (existing?.isFile()) {
-			console.log(`skip ${target} (already exists)`);
-			continue;
-		}
-		if (existing) throw new Error(`${dest} exists and is not a regular file`);
 
 		// Decrypt into a private directory on the same filesystem as the
 		// destination, so the rename below is atomic.

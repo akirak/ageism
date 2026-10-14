@@ -36,6 +36,17 @@ in
         );
       };
 
+      prune = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "/run/ageism";
+        description = ''
+          Directory whose subdirectories are removed before secrets are
+          decrypted. Set it to the directory secrets are installed into to
+          clear stale nested secrets left by earlier configurations.
+        '';
+      };
+
       settings = {
         agePackage = mkOption {
           type = types.package;
@@ -102,7 +113,9 @@ in
       };
 
       script = ''
-        ${lib.getExe pkgs.nodejs} ${./decrypt-secrets.mjs} ${indexPath}
+        ${lib.getExe pkgs.nodejs} ${./decrypt-secrets.mjs} ${indexPath} ${
+          lib.optionalString (cfg.prune != null) "--prune ${lib.escapeShellArg cfg.prune}"
+        }
       '';
     };
   };

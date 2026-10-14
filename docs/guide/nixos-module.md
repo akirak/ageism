@@ -81,7 +81,7 @@ Whether to enable the `ageism-secrets` service.
 | `owner` | string | Owner of the decrypted file, as accepted by `chown` (e.g. `user` or `user:group`). |
 | `mode` | string | Octal file mode of three or four digits, e.g. `"0400"`. |
 
-### `services.ageism.prune`
+### `services.ageism.settings.pruneDirectory`
 
 A directory whose subdirectories are removed before secrets are decrypted. Set it to the directory secrets are installed into, such as `/run/ageism`, to clear stale nested secrets left by earlier configurations. Defaults to `null` (no pruning).
 

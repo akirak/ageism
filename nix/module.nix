@@ -78,11 +78,12 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    systemd.tmpfiles.rules =
-      [ "d /run/ageism 0755 root root -" ]
-      ++ lib.optional (
-        cfg.settings.lastManifest != null
-      ) "d ${dirOf cfg.settings.lastManifest} 0755 root root -";
+    systemd.tmpfiles.rules = [
+      "d /run/ageism 0755 root root -"
+    ]
+    ++ lib.optional (
+      cfg.settings.lastManifest != null
+    ) "d ${dirOf cfg.settings.lastManifest} 0755 root root -";
 
     systemd.services.ageism-secrets = {
       wantedBy = [ "multi-user.target" ];
@@ -131,11 +132,13 @@ in
 
       script = ''
         ${lib.getExe pkgs.nodejs} ${./decrypt-secrets.mjs} ${indexPath} ${
-          lib.optionalString (cfg.settings.pruneDirectory != null)
-            "--prune ${lib.escapeShellArg cfg.settings.pruneDirectory}"
+          lib.optionalString (
+            cfg.settings.pruneDirectory != null
+          ) "--prune ${lib.escapeShellArg cfg.settings.pruneDirectory}"
         } ${
-          lib.optionalString (cfg.settings.lastManifest != null)
-            "--last-manifest ${lib.escapeShellArg cfg.settings.lastManifest}"
+          lib.optionalString (
+            cfg.settings.lastManifest != null
+          ) "--last-manifest ${lib.escapeShellArg cfg.settings.lastManifest}"
         }
       '';
     };

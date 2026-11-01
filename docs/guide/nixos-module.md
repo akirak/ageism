@@ -1,6 +1,6 @@
 # NixOS module
 
-The flake exports a NixOS module as `nixosModules.default`. It adds a oneshot systemd service, `ageism-secrets`, that decrypts deployed secrets into their final locations at boot (and on reload whenever the secret list changes).
+The flake exports a NixOS module as `nixosModules.default`. It adds a oneshot systemd service, `ageism-secrets`, that decrypts deployed secrets into their final locations at boot (and on reload whenever the secret list changes). Secrets marked `neededForUsers` are decrypted separately by `ageism-secrets-for-users`, which is wanted by and runs before `systemd-sysusers.service`.
 
 ## Setup
 
@@ -64,7 +64,7 @@ The service fails if any secret could not be installed, after attempting all of 
 
 Because the service runs as root, the parent directory of `path` and all of its ancestors (after resolving symlinks) must be owned by root and must not be writable by group or others. Otherwise another user could redirect the write or the `chown` to a different file. This rules out locations such as home directories and `/tmp`. Put secrets under a root-owned directory such as `/run/ageism`, which the module creates at boot (owned by root, mode `0755`), and use [systemd credentials](./systemd-credentials) or a symlink to make them available elsewhere.
 
-The service runs with `UMask=0077` and a systemd sandbox: no network (only `AF_UNIX` sockets, so age plugins can reach daemons such as `pcscd`), no new privileges, a private `/tmp`, an inaccessible `/home`, and a capability bounding set limited to `CAP_CHOWN`, `CAP_FOWNER`, `CAP_DAC_OVERRIDE` and `CAP_DAC_READ_SEARCH`. The rest of the file system stays writable, so `path` may be anywhere that passes the check above. Directories created for `path` get mode `0755`.
+Both services run with `UMask=0077` and a systemd sandbox: no network (only `AF_UNIX` sockets, so age plugins can reach daemons such as `pcscd`), no new privileges, an inaccessible `/home`, and a capability bounding set limited to `CAP_CHOWN`, `CAP_FOWNER`, `CAP_DAC_OVERRIDE` and `CAP_DAC_READ_SEARCH`. The regular service also uses a private `/tmp`; the early service does not, to avoid an ordering dependency on tmpfiles, which runs after sysusers. The rest of the file system stays writable, so `path` may be anywhere that passes the check above. Directories created for `path` get mode `0755`.
 
 ## Options
 
@@ -80,6 +80,9 @@ Whether to enable the `ageism-secrets` service.
 | `path` | string | Destination of the decrypted secret. Missing parent directories are created. Every directory on the path must be owned by root and not writable by group or others. |
 | `owner` | string | Owner of the decrypted file, as accepted by `chown` (e.g. `user` or `user:group`). |
 | `mode` | string | Octal file mode of three or four digits, e.g. `"0400"`. |
+| `neededForUsers` | boolean | Decrypt before `systemd-sysusers.service`, e.g. for `users.users.<name>.hashedPasswordFile`. Defaults to `false`. The secret must be owned by `root` (or UID `0`); a group suffix such as `root:root` is allowed. Other owners cause a configuration error. |
+
+The `ageism-secrets-for-users` service is added only when at least one secret has `neededForUsers = true`. These secrets are excluded from the regular service. When pruning is enabled, it runs in the early service only, so the regular service does not remove secrets needed for user creation.
 
 ### `services.ageism.settings.pruneDirectory`
 

@@ -96,9 +96,12 @@
       );
 
       checks = eachSystem (
-        system: _pkgs:
+        system: pkgs:
         {
           treefmt = treefmtEval.${system}.config.build.check self;
+        }
+        // nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          module = import ./nix/tests/module.nix { inherit pkgs; };
         }
         // self.packages.${system}
       );

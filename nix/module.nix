@@ -27,8 +27,8 @@ let
       forUsers ? false,
     }:
     let
-      # Prune once, before either set of secrets is installed.
-      pruneDirectory = if forUsers || !hasUserSecrets then cfg.settings.pruneDirectory else null;
+      # Each phase publishes independently; neither may prune the other's generations.
+      generationDirectory = cfg.settings.generationDirectory + lib.optionalString forUsers ".for-users";
       lastManifest =
         if cfg.settings.lastManifest == null then
           null
@@ -51,6 +51,7 @@ let
       path = [
         cfg.settings.agePackage
         pkgs.coreutils
+        pkgs.util-linux
       ]
       ++ cfg.settings.agePlugins;
 
@@ -95,8 +96,10 @@ let
       '';
 
       script = ''
-        ${lib.getExe pkgs.nodejs} ${./decrypt-secrets.mjs} ${indexPath} ${
-          lib.optionalString (pruneDirectory != null) "--prune ${lib.escapeShellArg pruneDirectory}"
+        ${lib.getExe pkgs.nodejs} ${./decrypt-secrets.mjs} ${indexPath} --generation-dir ${lib.escapeShellArg generationDirectory} ${
+          lib.optionalString (
+            cfg.settings.pruneDirectory != null
+          ) "--prune ${lib.escapeShellArg cfg.settings.pruneDirectory}"
         } ${lib.optionalString (lastManifest != null) "--last-manifest ${lib.escapeShellArg lastManifest}"}
       '';
     };
@@ -113,6 +116,7 @@ in
             options = {
               path = mkOption {
                 type = types.str;
+                description = "Stable symlink to this secret in the service's active generation.";
               };
               source = mkOption {
                 type = types.str;
@@ -138,14 +142,27 @@ in
       };
 
       settings = {
+        generationDirectory = mkOption {
+          type = types.str;
+          default = "/run/ageism/.generations";
+          description = ''
+            Directory containing plaintext generations and their atomic current
+            symlink. Use a volatile filesystem such as /run. Secrets needed for
+            user creation use a separate directory with a .for-users suffix.
+            This directory and all its ancestors must be root-owned and not
+            writable by group or others.
+          '';
+        };
+
         pruneDirectory = mkOption {
           type = types.nullOr types.str;
           default = null;
           example = "/run/ageism";
           description = ''
-            Directory whose subdirectories are removed before secrets are
-            decrypted. Set it to the directory secrets are installed into to
-            clear stale nested secrets left by earlier configurations.
+            After successfully publishing a generation, remove obsolete managed
+            secret symlinks beneath this directory and garbage-collect older
+            generations. The active and immediately previous generations are
+            retained. Unrelated files and directories are never removed.
           '';
         };
 
@@ -154,12 +171,12 @@ in
           default = null;
           example = "/var/lib/ageism/last-manifest.json";
           description = ''
-            Path to a state file recording the manifest of the last fully
-            successful run. Secrets whose entries are unchanged since that
-            run are not re-decrypted, provided their target files still
-            exist. Use a persistent location; a path on a tmpfs such as
-            /run defeats the purpose of this option. Secrets needed for user
-            creation use a separate state file with a .for-users suffix.
+            Enable reuse of unchanged secrets from the active generation, and
+            expose its manifest at this path via a symlink. Manifest state is
+            committed atomically with the secrets; a failed update cannot leave
+            stale cache state. After reboot, secrets on /run are decrypted again.
+            Secrets needed for user creation use a separate path with a
+            .for-users suffix.
           '';
         };
 
@@ -180,15 +197,26 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    assertions = lib.mapAttrsToList (name: secret: {
-      assertion =
-        !secret.neededForUsers
-        || lib.elem (lib.head (lib.splitString ":" secret.owner)) [
-          "root"
-          "0"
-        ];
-      message = "services.ageism.secrets.${name}: secrets with neededForUsers = true must be owned by root (owner must be root or UID 0, optionally followed by a group).";
-    }) cfg.secrets;
+    assertions =
+      lib.mapAttrsToList (name: secret: {
+        assertion =
+          !secret.neededForUsers
+          || lib.elem (lib.head (lib.splitString ":" secret.owner)) [
+            "root"
+            "0"
+          ];
+        message = "services.ageism.secrets.${name}: secrets with neededForUsers = true must be owned by root (owner must be root or UID 0, optionally followed by a group).";
+      }) cfg.secrets
+      ++ [
+        {
+          assertion =
+            let
+              paths = map (secret: secret.path) (lib.attrValues cfg.secrets);
+            in
+            builtins.length paths == builtins.length (lib.unique paths);
+          message = "services.ageism: secret paths must be unique across both provisioning phases.";
+        }
+      ];
 
     systemd.tmpfiles.rules = [
       "d /run/ageism 0755 root root -"

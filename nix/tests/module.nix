@@ -46,7 +46,9 @@ let
     enable = true;
     inherit settings;
     secrets = {
-      regular = secret;
+      regular = secret // {
+        path = "/run/ageism/regular";
+      };
       password = secret // {
         neededForUsers = true;
       };
@@ -146,7 +148,11 @@ let
         (manifest earlyService)
       ];
       expected = [
-        (expectedManifest { regular = secret; })
+        (expectedManifest {
+          regular = secret // {
+            path = "/run/ageism/regular";
+          };
+        })
         (expectedManifest { password = secret; })
       ];
     };
@@ -188,9 +194,43 @@ let
       ];
       expected = [
         true
-        false
+        true
         true
       ];
+    };
+    testSeparateGenerationDirectories = {
+      expr = [
+        (lib.hasInfix "--generation-dir /run/ageism/.generations " mixedRegularService.script)
+        (lib.hasInfix "--generation-dir /run/ageism/.generations.for-users " earlyService.script)
+      ];
+      expected = [
+        true
+        true
+      ];
+    };
+    testCustomGenerationDirectory = {
+      expr =
+        lib.hasInfix "--generation-dir /run/custom-generations "
+          (evaluate {
+            enable = true;
+            settings.generationDirectory = "/run/custom-generations";
+            secrets.regular = secret;
+          }).systemd.services.ageism-secrets.script;
+      expected = true;
+    };
+    testDuplicatePaths = {
+      expr =
+        lib.any (a: !a.assertion && lib.hasInfix "paths must be unique" a.message)
+          (evaluate {
+            enable = true;
+            secrets = {
+              regular = secret;
+              password = secret // {
+                neededForUsers = true;
+              };
+            };
+          }).assertions;
+      expected = true;
     };
     testSeparateLastManifests = {
       expr = [
@@ -205,7 +245,12 @@ let
       ];
     };
     testNoOptionalSettings = {
-      expr = lib.hasInfix "--" earlyOnly.systemd.services.ageism-secrets-for-users.script;
+      expr =
+        lib.any (flag: lib.hasInfix flag earlyOnly.systemd.services.ageism-secrets-for-users.script)
+          [
+            "--prune"
+            "--last-manifest"
+          ];
       expected = false;
     };
   };

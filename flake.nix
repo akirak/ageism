@@ -102,6 +102,19 @@
         }
         // nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           module = import ./nix/tests/module.nix { inherit pkgs; };
+          decryption =
+            pkgs.runCommand "ageism-decryption-tests"
+              {
+                nativeBuildInputs = [
+                  pkgs.nodejs
+                  pkgs.coreutils
+                  pkgs.util-linux
+                ];
+              }
+              ''
+                node --test ${./nix}/tests/decrypt-secrets.test.mjs
+                touch "$out"
+              '';
         }
         // self.packages.${system}
       );

@@ -53,7 +53,7 @@ in
 
 ## Updating a secret
 
-`ageism-secrets` skips a secret whose `path` already exists. If a secret changes but keeps the same `path`, the old plaintext stays in place until the file is removed. Keeping `path` under `/run` (a tmpfs) means it is cleared on reboot. Restart consuming services after updating so they load the new credential.
+`ageism-secrets` stages a complete generation and switches all of its configured paths together only after every secret is ready. Existing paths do not prevent updates. With `settings.lastManifest` enabled, entries unchanged from the active generation are copied rather than re-decrypted; changed entries are decrypted afresh. A failed update leaves the previous generation active. Restart consuming services after a successful update so they load the new credential.
 
 ## Encrypted credentials
 

@@ -68,4 +68,6 @@ Deployed files are not removed by default. With `--prune`, `ageism` removes secr
 
 ## At boot
 
-On the target, each `*.<ID>.age` secret is decrypted with the matching `identity.<ID>`. The [NixOS module](./nixos-module) provides a systemd service that does this.
+On the target, each `*.<ID>.age` secret is decrypted with the matching `identity.<ID>`. The [NixOS module](./nixos-module) stages all the plaintexts and their manifest in a private generation directory under `/run/ageism/.generations`. Configured secret paths are stable symlinks through that directory's `current` pointer. Only after every decryption and permission change succeeds does the service atomically switch `current` to the completed generation. A failed update leaves the previous secrets and cache metadata active.
+
+Secrets needed for user creation use an independent generation directory with a `.for-users` suffix and publish before user creation. Pruning runs only after publication and retains the active and immediately previous generations.

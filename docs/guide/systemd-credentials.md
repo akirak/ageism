@@ -53,7 +53,7 @@ in
 
 ## Updating a secret
 
-`ageism-secrets` stages a complete generation and switches all of its configured paths together only after every secret is ready. Existing paths do not prevent updates. With `settings.lastManifest` enabled, entries unchanged from the active generation are copied rather than re-decrypted; changed entries are decrypted afresh. A failed update leaves the previous generation active. Restart consuming services after a successful update so they load the new credential.
+`ageism-secrets` stages a complete generation in each destination directory and switches all of that directory's configured paths together, only after every secret is ready. Existing paths do not prevent updates. With `settings.lastManifest` enabled, entries unchanged from the active generation are copied rather than re-decrypted; changed entries are decrypted afresh. A failed update leaves the previous generation active. Restart consuming services after a successful update so they load the new credential. Directories switch one after another, so a service loading credentials from several directories may briefly see a mix of old and new values during an update.
 
 ## Encrypted credentials
 

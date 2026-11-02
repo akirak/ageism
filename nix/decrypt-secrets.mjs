@@ -1,39 +1,53 @@
 #!/usr/bin/env node
-// Stage a complete generation, then publish it with one atomic symlink rename.
-// Configured destinations are stable symlinks through GENERATION_DIR/current.
-// Cache metadata lives in the generation, so it is committed with the secrets.
-// Usage: decrypt-secrets.mjs MANIFEST.json [--generation-dir DIR]
-//        [--prune DIR] [--last-manifest FILE]
+// Stage a complete generation inside each destination directory's generation
+// store, then publish that directory with a single atomic rename of the
+// store's `current` symlink. Nothing is published in any directory until
+// decryption and permission setup have succeeded for every directory; a
+// failure rolls back directories already published in the same run.
+//
+// Configured destinations are *relative* symlinks that never leave their own
+// directory, so bind-mounting a destination directory (or any of its
+// ancestors) cannot produce dead links. Cache metadata lives inside the
+// generation, so it is committed together with the secrets.
+//
+// Layout for a secret installed at DIR/NAME:
+//   DIR/NAME -> .ageism/current/NAME          (relative symlink)
+//   DIR/.ageism/current -> generation-XXXX    (relative symlink)
+//   DIR/.ageism/generation-XXXX/NAME          (plaintext)
+//   DIR/.ageism/generation-XXXX/state.json    (cache metadata)
+//   DIR/.ageism/lock                          (advisory lock file)
+//
+// With --for-users, the store is named .ageism.for-users instead, so the
+// user-creation phase and the regular phase never share a store.
+//
+// Usage: decrypt-secrets.mjs MANIFEST.json [--for-users] [--prune DIR]
+//        [--last-manifest FILE]
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 function usage() {
 	console.error(
-		"usage: decrypt-secrets.mjs MANIFEST.json [--generation-dir DIR] [--prune DIR] [--last-manifest FILE]",
+		"usage: decrypt-secrets.mjs MANIFEST.json [--for-users] [--prune DIR] [--last-manifest FILE]",
 	);
 	process.exit(64);
 }
 
 let manifestPath = null;
-let generationDir = "/run/ageism/.generations";
 let pruneDir = null;
 let lastManifestPath = null;
-let locked = false;
+let forUsers = false;
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
 	const arg = args[i];
-	if (["--generation-dir", "--prune", "--last-manifest"].includes(arg)) {
+	if (arg === "--prune" || arg === "--last-manifest") {
 		const value = args[++i];
 		if (value === undefined) usage();
-		if (arg === "--generation-dir") generationDir = value;
-		else if (arg === "--prune") pruneDir = value;
+		if (arg === "--prune") pruneDir = value;
 		else lastManifestPath = value;
-	} else if (arg === "--locked") {
-		locked = true; // Internal worker, launched under flock below.
+	} else if (arg === "--for-users") {
+		forUsers = true;
 	} else if (!arg.startsWith("-") && manifestPath === null) {
 		manifestPath = arg;
 	} else {
@@ -44,6 +58,12 @@ if (!manifestPath) usage();
 
 const ageBin = process.env.AGE_BIN || "age";
 const uid = process.getuid();
+const storeName = `.ageism${forUsers ? ".for-users" : ""}`;
+const stateFile = "state.json";
+
+// Open file descriptors of lock files. The kernel releases the locks when
+// this process exits or is killed, however it terminates.
+const heldLocks = [];
 
 function lstat(file) {
 	try {
@@ -92,18 +112,18 @@ function destination(target) {
 	);
 }
 
-function inside(parent, child) {
-	const relative = path.relative(parent, child);
-	return (
-		relative === "" ||
-		(!relative.startsWith(`..${path.sep}`) &&
-			relative !== ".." &&
-			!path.isAbsolute(relative))
-	);
+function isGenerationName(name) {
+	return /^generation-[A-Za-z0-9]+$/.test(name);
 }
 
-function fileId(target) {
-	return createHash("sha256").update(target).digest("hex");
+function storeOf(dir) {
+	return path.join(dir, storeName);
+}
+
+// The relative symlink installed at a destination, resolved by any process
+// that can traverse the destination's own directory.
+function managedLink(name) {
+	return path.join(storeName, "current", name);
 }
 
 function sameEntry(a, b) {
@@ -142,42 +162,97 @@ function copyOriginal(source, dest) {
 	fs.chmodSync(dest, st.mode & 0o7777);
 }
 
-function currentGeneration(root) {
-	const current = path.join(root, "current");
+function currentGeneration(store) {
+	const current = path.join(store, "current");
 	const st = lstat(current);
 	if (!st) return null;
 	if (!st.isSymbolicLink()) throw new Error(`${current} is not a symlink`);
 	const name = fs.readlinkSync(current);
-	if (!/^generation-[A-Za-z0-9]+$/.test(name))
+	if (!isGenerationName(name))
 		throw new Error(`${current} does not point to a managed generation`);
-	const dir = path.join(root, name);
+	const dir = path.join(store, name);
 	assertTrusted(dir);
-	assertTrusted(path.join(dir, "files"));
 	return dir;
 }
 
-function newGeneration(root) {
-	const dir = fs.mkdtempSync(path.join(root, "generation-"));
-	fs.mkdirSync(path.join(dir, "files"), { mode: 0o755 });
-	fs.chmodSync(path.join(dir, "files"), 0o755);
-	return dir;
+function newGeneration(store) {
+	// Private while staging; made traversable right before publication.
+	return fs.mkdtempSync(path.join(store, "generation-"));
 }
 
-function publish(root, dir) {
-	const temporary = path.join(root, `.current-${path.basename(dir)}`);
+function publish(store, dir) {
+	const temporary = path.join(store, `.current-${path.basename(dir)}`);
 	fs.symlinkSync(path.basename(dir), temporary);
 	try {
-		fs.renameSync(temporary, path.join(root, "current"));
+		fs.renameSync(temporary, path.join(store, "current"));
 	} catch (err) {
 		fs.rmSync(temporary, { force: true });
 		throw err;
 	}
 }
 
-// Prepare stable public aliases. Keep legacy backups in memory, rather than
-// leaving additional plaintext copies beside destinations after a crash. Before
-// the commit, aliases resolve to the old generation (or dangle for new secrets).
-function installAlias(target, link, changes) {
+// Take the advisory lock of a store. The flock child locks the descriptor
+// inherited through stdio and exits immediately; the lock is held by the open
+// file description, i.e. until this process closes the descriptor, even if it
+// is killed. Never unlink the lock file: another caller may already have
+// opened the same inode.
+function acquireLock(store) {
+	const lockPath = path.join(store, "lock");
+	const fd = fs.openSync(lockPath, "a");
+	const worker = spawnSync(
+		"flock",
+		["--exclusive", "--nonblock", "--conflict-exit-code", "75", "3"],
+		{ stdio: ["ignore", "inherit", "inherit", fd] },
+	);
+	if (worker.status === 75) {
+		fs.closeSync(fd);
+		throw new Error(`another provisioning process holds ${lockPath}`);
+	}
+	if (worker.error || worker.status !== 0) {
+		fs.closeSync(fd);
+		throw (
+			worker.error ||
+			new Error(`cannot lock ${lockPath} (flock exited ${worker.status})`)
+		);
+	}
+	heldLocks.push(fd);
+}
+
+// Find generation stores of this phase below the prune directory whose
+// directories no longer have any secrets, so their plaintexts can be
+// retired. Symlinks are never followed, so the scan cannot escape the tree.
+function scanStores(prune) {
+	const found = [];
+	const walk = (dir) => {
+		let list;
+		try {
+			list = fs.readdirSync(dir, { withFileTypes: true });
+		} catch (err) {
+			console.error(`warning: cannot scan ${dir}: ${err.message}`);
+			return;
+		}
+		for (const ent of list) {
+			if (!ent.isDirectory()) continue;
+			if (ent.name === storeName) {
+				const current = path.join(dir, ent.name, "current");
+				if (
+					lstat(current)?.isSymbolicLink() &&
+					isGenerationName(fs.readlinkSync(current))
+				)
+					found.push(path.join(dir, ent.name));
+			} else walk(path.join(dir, ent.name));
+		}
+	};
+	walk(prune);
+	return found;
+}
+
+// Prepare the public destination symlinks. Backups are kept in memory rather
+// than leaving plaintext copies beside destinations after a crash. Before the
+// switch, the symlinks resolve to the old generation (or dangle for new
+// secrets).
+function installAlias(target, name, changes) {
+	const link = managedLink(name);
 	const st = lstat(target);
 	if (st?.isSymbolicLink() && fs.readlinkSync(target) === link) return;
 	if (st && !st.isFile() && !st.isSymbolicLink())
@@ -204,165 +279,272 @@ function installAlias(target, link, changes) {
 	}
 }
 
+// Remove managed symlinks of this phase that the new manifest no longer
+// uses. Other files, directories and the other phase's symlinks are left
+// alone; nothing is ever removed recursively.
+function pruneAliases(prune, byDir) {
+	const keepByDir = new Map(
+		[...byDir].map(([dir, entries]) => [dir, new Set(entries.keys())]),
+	);
+	const walk = (dir) => {
+		let list;
+		try {
+			list = fs.readdirSync(dir, { withFileTypes: true });
+		} catch (err) {
+			console.error(`warning: cannot scan ${dir}: ${err.message}`);
+			return;
+		}
+		const keep = keepByDir.get(dir);
+		for (const ent of list) {
+			const file = path.join(dir, ent.name);
+			if (ent.isSymbolicLink()) {
+				if (
+					fs.readlinkSync(file) === managedLink(ent.name) &&
+					!keep?.has(ent.name)
+				)
+					fs.unlinkSync(file);
+			} else if (ent.isDirectory() && ent.name !== storeName) walk(file);
+		}
+	};
+	walk(prune);
+}
+
 function provision() {
 	const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
 	if (!manifest || typeof manifest !== "object" || Array.isArray(manifest))
 		throw new Error("manifest must be an object");
-	const root = trustedDirectory(generationDir);
-	let staged;
-	let baseline;
+
+	// Validate the entries and group them by canonical destination directory.
+	const byDir = new Map(); // canonical directory -> Map(basename -> entry)
+	const targets = new Set();
+	for (const [name, entry] of Object.entries(manifest)) {
+		if (
+			!entry ||
+			typeof entry.source !== "string" ||
+			typeof entry.owner !== "string" ||
+			typeof entry.mode !== "string" ||
+			!/^[0-7]{3,4}$/.test(entry.mode)
+		)
+			throw new Error(`invalid manifest entry: ${name}`);
+		const target = destination(entry.path);
+		if (path.basename(target) === stateFile)
+			throw new Error(`destination name is reserved: ${entry.path}`);
+		if (lstat(target)?.isDirectory())
+			throw new Error(`destination is a directory: ${entry.path}`);
+		if (targets.has(target))
+			throw new Error(`duplicate destination: ${entry.path}`);
+		targets.add(target);
+		if (!byDir.has(path.dirname(target)))
+			byDir.set(path.dirname(target), new Map());
+		byDir.get(path.dirname(target)).set(path.basename(target), {
+			...entry,
+			target,
+		});
+	}
+	for (const target of targets)
+		for (const component of target.split(path.sep))
+			if (component === storeName)
+				throw new Error(`destination overlaps a generation store: ${target}`);
+
+	const last = lastManifestPath ? destination(lastManifestPath) : null;
+	if (last) {
+		if (targets.has(last))
+			throw new Error("last manifest overlaps a secret destination");
+		for (const component of last.split(path.sep))
+			if (component === storeName)
+				throw new Error(
+					`last manifest overlaps a generation store: ${lastManifestPath}`,
+				);
+	}
+	const prune = pruneDir ? trustedDirectory(pruneDir) : null;
+
+	// Directories that no longer have secrets of this phase keep their store;
+	// with pruning they are switched to an empty generation and collected.
+	const stores = new Map(); // store directory -> { dir, entries, orphan }
+	for (const [dir, entries] of byDir)
+		stores.set(storeOf(dir), { dir, entries, orphan: false });
+	if (prune)
+		for (const store of scanStores(prune))
+			if (!stores.has(store))
+				stores.set(store, {
+					dir: path.dirname(store),
+					entries: new Map(),
+					orphan: true,
+				});
+
+	// Create the stores and take every lock in sorted order, so concurrent
+	// runs cannot deadlock and always fail closed instead of interleaving.
+	for (const store of [...stores.keys()].sort()) {
+		const info = stores.get(store);
+		try {
+			trustedDirectory(path.dirname(store));
+			if (!fs.existsSync(store)) {
+				fs.mkdirSync(store, { mode: 0o755 });
+				fs.chmodSync(store, 0o755); // Override the service's UMask=0077.
+			}
+			assertTrusted(store);
+		} catch (err) {
+			if (info.orphan) {
+				stores.delete(store);
+				console.error(
+					`warning: skipping generation store ${store}: ${err.message}`,
+				);
+				continue;
+			}
+			throw err;
+		}
+		acquireLock(store);
+	}
+
 	let committed = false;
 	const changes = [];
 	const seeded = [];
+	const contexts = new Map();
 	try {
-		let previous = currentGeneration(root);
-		const old = previous
-			? JSON.parse(fs.readFileSync(path.join(previous, "state.json"), "utf8"))
-			: {};
-		const oldTargets = new Set(Object.values(old).map((entry) => entry.target));
-		const entries = {};
-		const targets = new Set();
-		for (const [name, entry] of Object.entries(manifest)) {
-			if (
-				!entry ||
-				typeof entry.source !== "string" ||
-				typeof entry.owner !== "string" ||
-				typeof entry.mode !== "string" ||
-				!/^[0-7]{3,4}$/.test(entry.mode)
-			)
-				throw new Error(`invalid manifest entry: ${name}`);
-			const target = destination(entry.path);
-			if (inside(root, target) || inside(target, root))
-				throw new Error(
-					`destination overlaps generation directory: ${entry.path}`,
-				);
-			if (targets.has(target))
-				throw new Error(`duplicate destination: ${entry.path}`);
-			targets.add(target);
-			Object.defineProperty(entries, name, {
-				value: { ...entry, target },
-				enumerable: true,
-			});
-		}
-		const last = lastManifestPath ? destination(lastManifestPath) : null;
-		if (last && (targets.has(last) || inside(root, last) || inside(last, root)))
-			throw new Error(
-				"last manifest overlaps a secret or generation directory",
+		// Stage every directory first: nothing is published until every
+		// plaintext and permission change has succeeded.
+		for (const [store, info] of stores) {
+			const original = currentGeneration(store);
+			let old = {};
+			if (original)
+				try {
+					old = JSON.parse(
+						fs.readFileSync(path.join(original, stateFile), "utf8"),
+					);
+				} catch (err) {
+					if (!info.orphan) throw err;
+					console.error(
+						`warning: ignoring cache state in ${original}: ${err.message}`,
+					);
+				}
+			if (!old || typeof old !== "object" || Array.isArray(old))
+				throw new Error(`invalid cache state in ${original ?? store}`);
+			const oldTargets = new Set(
+				Object.values(old).map((entry) => entry.target),
 			);
-		const prune = pruneDir ? trustedDirectory(pruneDir) : null;
-		staged = newGeneration(root);
-		for (const [name, entry] of Object.entries(entries)) {
-			const file = path.join(staged, "files", fileId(entry.target));
-			const cached =
-				previous && path.join(previous, "files", fileId(entry.target));
-			if (last && sameEntry(old[name], entry) && lstat(cached)?.isFile()) {
-				fs.copyFileSync(cached, file, fs.constants.COPYFILE_EXCL);
-				console.log(`reused ${entry.path} (unchanged)`);
-			} else {
-				execFileSync(
-					ageBin,
-					[
-						"--decrypt",
-						"-i",
-						findIdentity(entry.source),
-						"-o",
-						file,
-						entry.source,
-					],
-					{
-						stdio: ["pipe", "pipe", "pipe"],
-					},
-				);
-			}
-			setPermissions(file, entry);
-		}
-		fs.writeFileSync(path.join(staged, "state.json"), JSON.stringify(entries), {
-			mode: 0o600,
-		});
-		fs.writeFileSync(
-			path.join(staged, "manifest.json"),
-			JSON.stringify(manifest),
-			{ mode: 0o600 },
-		);
-
-		// Import legacy regular files only after staging succeeds. This preserves
-		// their contents while converting their paths to generation aliases.
-		for (const entry of Object.values(entries)) {
-			const link = path.join(root, "current", "files", fileId(entry.target));
-			const st = lstat(entry.target);
-			if (
-				!st ||
-				(st.isSymbolicLink() && fs.readlinkSync(entry.target) === link)
-			)
-				continue;
-			if (st.isSymbolicLink() && !fs.existsSync(entry.target)) continue;
-			if (!st.isFile() && !st.isSymbolicLink())
-				throw new Error(`${entry.path} is not a file or symlink`);
-			if (!previous) {
-				baseline = newGeneration(root);
-				fs.writeFileSync(path.join(baseline, "state.json"), "{}", {
-					mode: 0o600,
-				});
-				if (last && fs.existsSync(last) && fs.statSync(last).isFile())
-					fs.writeFileSync(
-						path.join(baseline, "manifest.json"),
-						fs.readFileSync(last),
+			const staged = newGeneration(store);
+			const context = {
+				store,
+				info,
+				original,
+				previous: original,
+				old,
+				oldTargets,
+				staged,
+				baseline: null,
+				switched: false,
+			};
+			contexts.set(store, context);
+			for (const [name, entry] of info.entries) {
+				const file = path.join(staged, name);
+				const cached = original && path.join(original, name);
+				if (last && sameEntry(old[name], entry) && lstat(cached)?.isFile()) {
+					fs.copyFileSync(cached, file, fs.constants.COPYFILE_EXCL);
+					console.log(`reused ${entry.path} (unchanged)`);
+				} else {
+					execFileSync(
+						ageBin,
+						[
+							"--decrypt",
+							"-i",
+							findIdentity(entry.source),
+							"-o",
+							file,
+							entry.source,
+						],
 						{
-							mode: 0o600,
+							stdio: ["pipe", "pipe", "pipe"],
 						},
 					);
-				previous = baseline;
+				}
+				setPermissions(file, entry);
 			}
-			const original = path.join(previous, "files", fileId(entry.target));
-			if (lstat(original) && oldTargets.has(entry.target))
-				throw new Error(`managed destination was replaced: ${entry.path}`);
-			seeded.push(original);
-			// A killed migration may have left an unrecorded seed in the old
-			// generation. It is not a committed secret and can be recreated.
-			fs.rmSync(original, { force: true });
-			copyOriginal(entry.target, original);
-		}
-		if (baseline) {
-			fs.chmodSync(baseline, 0o755);
-			publish(root, baseline);
-		}
-		for (const entry of Object.values(entries))
-			installAlias(
-				entry.target,
-				path.join(root, "current", "files", fileId(entry.target)),
-				changes,
+			fs.writeFileSync(
+				path.join(staged, stateFile),
+				JSON.stringify(Object.fromEntries(info.entries)),
+				{ mode: 0o600 },
 			);
-		if (last)
-			installAlias(last, path.join(root, "current", "manifest.json"), changes);
+		}
 
-		fs.chmodSync(staged, 0o755);
-		publish(root, staged);
+		// Import existing regular files and foreign symlinks into a baseline
+		// generation, so they stay readable until the switch, then publish each
+		// directory with one atomic rename of its store's current pointer.
+		for (const context of contexts.values()) {
+			const { store, info, oldTargets, staged } = context;
+			for (const [name, entry] of info.entries) {
+				const st = lstat(entry.target);
+				if (
+					!st ||
+					(st.isSymbolicLink() &&
+						fs.readlinkSync(entry.target) === managedLink(name))
+				)
+					continue;
+				if (st.isSymbolicLink() && !fs.existsSync(entry.target)) continue;
+				if (!st.isFile() && !st.isSymbolicLink())
+					throw new Error(`${entry.path} is not a file or symlink`);
+				if (!context.previous) {
+					context.baseline = newGeneration(store);
+					fs.writeFileSync(path.join(context.baseline, stateFile), "{}", {
+						mode: 0o600,
+					});
+					context.previous = context.baseline;
+				}
+				const originalFile = path.join(context.previous, name);
+				if (lstat(originalFile) && oldTargets.has(entry.target))
+					throw new Error(`managed destination was replaced: ${entry.path}`);
+				seeded.push(originalFile);
+				// A killed migration may have left an unrecorded seed in the
+				// previous generation. It is not a committed secret and can be
+				// recreated.
+				fs.rmSync(originalFile, { force: true });
+				copyOriginal(entry.target, originalFile);
+			}
+			if (context.baseline) {
+				fs.chmodSync(context.baseline, 0o755);
+				publish(store, context.baseline);
+				context.switched = true;
+			}
+			for (const [name, entry] of info.entries)
+				installAlias(entry.target, name, changes);
+			fs.chmodSync(staged, 0o755);
+			publish(store, staged);
+			context.switched = true;
+			console.log(`published ${staged}`);
+		}
 		committed = true;
-		console.log(`published ${staged}`);
 
-		// Only remove aliases owned by this generation set, and only after
-		// publication. Never recursively delete arbitrary destination trees.
+		// The file is a record for the operator; reuse decisions read the
+		// cache state committed inside each store, so a failed write cannot
+		// make the cache describe a different set of secrets.
+		if (last)
+			try {
+				const temporary = `${last}.${process.pid}.tmp`;
+				fs.copyFileSync(manifestPath, temporary);
+				fs.chmodSync(temporary, 0o600);
+				fs.renameSync(temporary, last);
+			} catch (err) {
+				console.error(
+					`warning: cannot save last manifest to ${last}: ${err.message}`,
+				);
+			}
+
+		// Only remove aliases owned by this phase, and only after publication.
+		// Never recursively delete arbitrary destination trees.
 		if (prune)
 			try {
-				for (const entry of Object.values(old)) {
-					if (!targets.has(entry.target) && inside(prune, entry.target)) {
-						const target = destination(entry.target);
-						const link = path.join(root, "current", "files", fileId(target));
-						if (
-							lstat(target)?.isSymbolicLink() &&
-							fs.readlinkSync(target) === link
-						)
-							fs.unlinkSync(target);
-					}
-				}
-				for (const name of fs.readdirSync(root)) {
-					const dir = path.join(root, name);
-					if (
-						/^generation-[A-Za-z0-9]+$/.test(name) &&
-						dir !== staged &&
-						dir !== previous
-					)
-						fs.rmSync(dir, { recursive: true, force: true });
+				pruneAliases(prune, byDir);
+				for (const context of contexts.values()) {
+					const keep = new Set(
+						[context.staged, context.previous]
+							.filter(Boolean)
+							.map((dir) => path.basename(dir)),
+					);
+					for (const name of fs.readdirSync(context.store))
+						if (isGenerationName(name) && !keep.has(name))
+							fs.rmSync(path.join(context.store, name), {
+								recursive: true,
+								force: true,
+							});
 				}
 			} catch (err) {
 				console.error(
@@ -388,44 +570,23 @@ function provision() {
 		}
 		if (!committed) {
 			for (const file of seeded) fs.rmSync(file, { force: true });
-			if (baseline) {
-				fs.rmSync(path.join(root, "current"), { force: true });
-				fs.rmSync(baseline, { recursive: true, force: true });
+			for (const context of contexts.values()) {
+				// A directory published before a later one failed is switched
+				// back to its previous generation.
+				if (context.switched) {
+					if (context.original) publish(context.store, context.original);
+					else fs.rmSync(path.join(context.store, "current"), { force: true });
+				}
+				if (context.baseline)
+					fs.rmSync(context.baseline, { recursive: true, force: true });
+				fs.rmSync(context.staged, { recursive: true, force: true });
 			}
-			if (staged) fs.rmSync(staged, { recursive: true, force: true });
 		}
 	}
 }
 
 try {
-	if (locked) {
-		provision();
-	} else {
-		// An advisory lock serializes standalone callers as well as services.
-		// It is released by the kernel even if the worker is killed. Never unlink
-		// the lock file: another caller may already have opened the same inode.
-		const root = trustedDirectory(generationDir);
-		const worker = spawnSync(
-			"flock",
-			[
-				"--exclusive",
-				"--nonblock",
-				"--conflict-exit-code",
-				"75",
-				path.join(root, "lock"),
-				process.execPath,
-				...process.execArgv,
-				fileURLToPath(import.meta.url),
-				...args,
-				"--locked",
-			],
-			{ stdio: "inherit" },
-		);
-		if (worker.error) throw worker.error;
-		if (worker.status === 75)
-			throw new Error(`another provisioning process holds ${root}/lock`);
-		process.exitCode = worker.status ?? 1;
-	}
+	provision();
 } catch (err) {
 	console.error(`error: ${err.stderr || err.message}`);
 	process.exitCode = 1;

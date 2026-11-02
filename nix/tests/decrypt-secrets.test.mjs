@@ -15,7 +15,6 @@ const script = fileURLToPath(
 function fixture(t) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ageism-generation-test-"));
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-	const root = path.join(dir, "generations");
 	const dest = path.join(dir, "destinations");
 	const last = path.join(dir, "state", "last.json");
 	const log = path.join(dir, "age.log");
@@ -62,6 +61,12 @@ fs.renameSync = (from, to) => {
   }
   return rename(from, to);
 };
+const symlink = fs.symlinkSync;
+fs.symlinkSync = (target, filepath, ...rest) => {
+  if (process.env.AGEISM_FAIL_ALIAS && path.basename(filepath) === 'next')
+    throw new Error('simulated alias failure');
+  return symlink(target, filepath, ...rest);
+};
 `,
 	);
 	fs.writeFileSync(
@@ -84,6 +89,8 @@ if (data.toString() === 'KILL') { process.kill(process.ppid, 'SIGKILL'); process
 		{ mode: 0o700 },
 	);
 
+	const storeOf = (directory, forUsers = false) =>
+		path.join(directory, `.ageism${forUsers ? ".for-users" : ""}`);
 	function entry(name, content, options = {}) {
 		const sum = createHash("sha256").update(content).digest("hex");
 		const source = path.join(dir, `sha256-${sum}.12345678.age`);
@@ -98,7 +105,9 @@ if (data.toString() === 'KILL') { process.kill(process.ppid, 'SIGKILL'); process
 	}
 	function run(entries, options = {}) {
 		fs.writeFileSync(manifest, JSON.stringify(entries));
-		const selectedRoot = options.root || root;
+		const store = options.store || storeOf(dest, options.forUsers);
+		const lastPath =
+			options.last || (options.forUsers ? `${last}.for-users` : last);
 		const result = spawnSync(
 			process.execPath,
 			[
@@ -106,11 +115,8 @@ if (data.toString() === 'KILL') { process.kill(process.ppid, 'SIGKILL'); process
 				preload,
 				script,
 				manifest,
-				"--generation-dir",
-				selectedRoot,
-				...(options.cache === false
-					? []
-					: ["--last-manifest", options.last || last]),
+				...(options.forUsers ? ["--for-users"] : []),
+				...(options.cache === false ? [] : ["--last-manifest", lastPath]),
 				...(options.prune === false ? [] : ["--prune", dest]),
 			],
 			{
@@ -119,7 +125,7 @@ if (data.toString() === 'KILL') { process.kill(process.ppid, 'SIGKILL'); process
 					...process.env,
 					AGE_BIN: age,
 					AGEISM_LOG: log,
-					AGEISM_CURRENT: path.join(selectedRoot, "current"),
+					AGEISM_CURRENT: path.join(store, "current"),
 					AGEISM_EXPECT: JSON.stringify(options.expect || {}),
 					...(options.env || {}),
 				},
@@ -129,20 +135,22 @@ if (data.toString() === 'KILL') { process.kill(process.ppid, 'SIGKILL'); process
 		else assert.equal(result.status, 0, result.stderr);
 		return result;
 	}
-	const current = (selectedRoot = root) =>
-		fs.readlinkSync(path.join(selectedRoot, "current"));
+	const current = (store = storeOf(dest)) =>
+		fs.readlinkSync(path.join(store, "current"));
 	const read = (entry) => fs.readFileSync(entry.path, "utf8");
 	const calls = () =>
 		fs.existsSync(log)
 			? fs.readFileSync(log, "utf8").trim().split("\n").length
 			: 0;
-	const generations = () =>
-		fs.readdirSync(root).filter((name) => name.startsWith("generation-"));
+	const generations = (store = storeOf(dest)) =>
+		fs.existsSync(store)
+			? fs.readdirSync(store).filter((name) => name.startsWith("generation-"))
+			: [];
 	return {
 		dir,
-		root,
 		dest,
 		last,
+		storeOf,
 		entry,
 		run,
 		current,
@@ -152,7 +160,7 @@ if (data.toString() === 'KILL') { process.kill(process.ppid, 'SIGKILL'); process
 	};
 }
 
-test("first provisioning exposes all secrets and metadata at a single switch", (t) => {
+test("first provisioning publishes relative symlinks that stay in their directory", (t) => {
 	const f = fixture(t);
 	const entries = {
 		a: f.entry("a", "first"),
@@ -163,44 +171,72 @@ test("first provisioning exposes all secrets and metadata at a single switch", (
 	});
 	assert.equal(f.read(entries.a), "first");
 	assert.equal(f.read(entries.b), "second");
-	assert.ok(fs.lstatSync(entries.a.path).isSymbolicLink());
-	assert.ok(fs.lstatSync(f.last).isSymbolicLink());
-	assert.deepEqual(JSON.parse(fs.readFileSync(f.last)), entries);
-	assert.equal(fs.statSync(entries.a.path).mode & 0o777, 0o400);
+	// Every symlink is relative and resolves inside the destination directory
+	// that contains it, so bind-mounting a destination directory (or any of
+	// its ancestors) cannot produce dead links.
 	assert.equal(
-		fs.statSync(path.join(f.root, f.current(), "manifest.json")).mode & 0o777,
+		fs.readlinkSync(entries.a.path),
+		path.join(".ageism", "current", "a"),
+	);
+	assert.equal(
+		fs.readlinkSync(entries.b.path),
+		path.join(".ageism", "current", "b"),
+	);
+	for (const [entry, store] of [
+		[entries.a, f.storeOf(f.dest)],
+		[entries.b, f.storeOf(path.join(f.dest, "nested"))],
+	]) {
+		assert.ok(fs.realpathSync(entry.path).startsWith(`${store}${path.sep}`));
+		assert.ok(fs.lstatSync(path.join(store, "current")).isSymbolicLink());
+		assert.match(fs.readlinkSync(path.join(store, "current")), /^generation-/);
+	}
+	assert.ok(fs.lstatSync(f.last).isFile());
+	assert.deepEqual(JSON.parse(fs.readFileSync(f.last, "utf8")), entries);
+	assert.equal(fs.statSync(entries.a.path).mode & 0o777, 0o400);
+	const state = JSON.parse(
+		fs.readFileSync(
+			path.join(f.storeOf(f.dest), f.current(), "state.json"),
+			"utf8",
+		),
+	);
+	assert.deepEqual(state.a, { ...entries.a, target: entries.a.path });
+	assert.equal(
+		fs.lstatSync(path.join(f.storeOf(f.dest), f.current(), "state.json")).mode &
+			0o777,
 		0o600,
 	);
 });
 
 test("replacement keeps the entire old generation visible until publication", (t) => {
 	const f = fixture(t);
-	const old = { a: f.entry("a", "old-a"), b: f.entry("nested/b", "old-b") };
+	const old = { a: f.entry("a", "old-a"), b: f.entry("b", "old-b") };
 	f.run(old);
 	const previous = f.current();
-	const updated = { a: f.entry("a", "new-a"), b: f.entry("nested/b", "new-b") };
+	const updated = { a: f.entry("a", "new-a"), b: f.entry("b", "new-b") };
 	f.run(updated, { expect: { [old.a.path]: "old-a", [old.b.path]: "old-b" } });
 	assert.notEqual(f.current(), previous);
 	assert.equal(f.read(old.a), "new-a");
 	assert.equal(f.read(old.b), "new-b");
-	assert.deepEqual(JSON.parse(fs.readFileSync(f.last)), updated);
+	assert.deepEqual(JSON.parse(fs.readFileSync(f.last, "utf8")), updated);
 });
 
 test("partial decryption failure preserves nested secrets and cache; rollback is safe", (t) => {
 	const f = fixture(t);
+	const nested = f.storeOf(path.join(f.dest, "nested"));
 	const old = { a: f.entry("a", "old-a"), b: f.entry("nested/b", "old-b") };
 	f.run(old);
-	const previous = f.current();
+	const previous = [f.current(), f.current(nested)];
 	const updated = { a: f.entry("a", "new-a"), b: f.entry("nested/b", "FAIL") };
 	f.run(updated, {
 		fail: true,
 		expect: { [old.a.path]: "old-a", [old.b.path]: "old-b" },
 	});
-	assert.equal(f.current(), previous);
+	assert.equal(f.current(), previous[0]);
+	assert.equal(f.current(nested), previous[1]);
 	assert.equal(f.read(old.a), "old-a");
 	assert.equal(f.read(old.b), "old-b");
-	assert.deepEqual(JSON.parse(fs.readFileSync(f.last)), old);
-	assert.deepEqual(f.generations(), [previous]);
+	assert.deepEqual(JSON.parse(fs.readFileSync(f.last, "utf8")), old);
+	assert.deepEqual(f.generations(), [previous[0]]);
 	const calls = f.calls();
 	f.run(old);
 	assert.equal(
@@ -213,11 +249,13 @@ test("partial decryption failure preserves nested secrets and cache; rollback is
 
 test("first-run decryption failure publishes nothing and removes plaintext staging", (t) => {
 	const f = fixture(t);
-	const entries = { a: f.entry("a", "secret"), b: f.entry("b", "FAIL") };
+	const entries = { a: f.entry("a", "secret"), b: f.entry("nested/b", "FAIL") };
 	f.run(entries, { fail: true });
 	assert.equal(fs.existsSync(entries.a.path), false);
+	assert.equal(fs.existsSync(entries.b.path), false);
 	assert.equal(fs.existsSync(f.last), false);
 	assert.deepEqual(f.generations(), []);
+	assert.deepEqual(f.generations(f.storeOf(path.join(f.dest, "nested"))), []);
 });
 
 test("a killed worker preserves the old generation and releases its advisory lock", (t) => {
@@ -228,7 +266,7 @@ test("a killed worker preserves the old generation and releases its advisory loc
 	f.run({ a: f.entry("a", "KILL") }, { fail: true });
 	assert.equal(f.current(), previous);
 	assert.equal(f.read(a), "old");
-	assert.deepEqual(JSON.parse(fs.readFileSync(f.last)), { a });
+	assert.deepEqual(JSON.parse(fs.readFileSync(f.last, "utf8")), { a });
 	f.run({ a });
 	assert.equal(f.read(a), "old");
 	assert.equal(
@@ -288,7 +326,7 @@ test("legacy cache metadata is unchanged until the generation switch", (t) => {
 	fs.mkdirSync(path.dirname(f.last));
 	fs.writeFileSync(f.last, '{"legacy":true}', { mode: 0o600 });
 	f.run({ a }, { expect: { [a.path]: "legacy", [f.last]: '{"legacy":true}' } });
-	assert.deepEqual(JSON.parse(fs.readFileSync(f.last)), { a });
+	assert.deepEqual(JSON.parse(fs.readFileSync(f.last, "utf8")), { a });
 });
 
 test("legacy symlink targets are not overwritten during migration", (t) => {
@@ -306,12 +344,11 @@ test("alias setup failure restores legacy files and removes unpublished generati
 	const f = fixture(t);
 	const a = f.entry("a", "new");
 	fs.writeFileSync(a.path, "legacy", { mode: 0o640 });
-	fs.mkdirSync(f.last, { recursive: true }); // Cannot replace a directory with a symlink.
-	f.run({ a }, { fail: true });
+	f.run({ a }, { fail: true, env: { AGEISM_FAIL_ALIAS: "1" } });
 	assert.ok(fs.lstatSync(a.path).isFile());
 	assert.equal(f.read(a), "legacy");
 	assert.equal(fs.statSync(a.path).mode & 0o777, 0o640);
-	assert.equal(fs.existsSync(path.join(f.root, "current")), false);
+	assert.equal(fs.existsSync(path.join(f.storeOf(f.dest), "current")), false);
 	assert.deepEqual(f.generations(), []);
 });
 
@@ -332,9 +369,38 @@ test("failure of the publication rename rolls back aliases and keeps committed s
 	assert.equal(f.current(), previous);
 	assert.equal(f.read(a), "old-a");
 	assert.equal(fs.existsSync(added.path), false);
-	assert.equal(fs.lstatSync(f.last).isSymbolicLink(), true);
-	assert.deepEqual(JSON.parse(fs.readFileSync(f.last)), { a });
+	assert.deepEqual(JSON.parse(fs.readFileSync(f.last, "utf8")), { a });
 	assert.deepEqual(f.generations(), [previous]);
+});
+
+test("a failure after another directory's switch rolls that directory back", (t) => {
+	const f = fixture(t);
+	const nested = f.storeOf(path.join(f.dest, "nested"));
+	const a = f.entry("a", "old-a");
+	const c = f.entry("nested/c", "old-c");
+	f.run({ a, c });
+	const stores = [f.storeOf(f.dest), nested];
+	const previous = stores.map((store) => f.current(store));
+	f.run(
+		{ a: f.entry("a", "new-a"), c: f.entry("nested/c", "new-c") },
+		{
+			fail: true,
+			store: nested,
+			env: { AGEISM_FAIL_PUBLISH: "1" },
+			// The first directory has already switched when the second one
+			// fails; the rollback must undo it as well.
+			expect: { [a.path]: "new-a", [c.path]: "old-c" },
+		},
+	);
+	assert.deepEqual(
+		stores.map((store) => f.current(store)),
+		previous,
+	);
+	assert.equal(f.read(a), "old-a");
+	assert.equal(f.read(c), "old-c");
+	for (const store of stores)
+		assert.deepEqual(f.generations(store), [f.current(store)]);
+	assert.deepEqual(JSON.parse(fs.readFileSync(f.last, "utf8")), { a, c });
 });
 
 test("a failed legacy baseline publication cleans up and allows retry", (t) => {
@@ -382,52 +448,75 @@ test("without caching each generation is decrypted afresh", (t) => {
 
 test("pruning retains current and previous generations, not arbitrary directories", (t) => {
 	const f = fixture(t);
+	const nested = f.storeOf(path.join(f.dest, "nested"));
 	const unrelated = path.join(f.dest, "unrelated");
 	fs.mkdirSync(unrelated);
 	fs.writeFileSync(path.join(unrelated, "keep"), "keep");
 	f.run({ a: f.entry("nested/a", "one") });
-	const first = f.current();
+	const first = f.current(nested);
 	f.run({ a: f.entry("nested/a", "two") });
-	const second = f.current();
+	const second = f.current(nested);
 	f.run({ a: f.entry("nested/a", "three") });
-	assert.deepEqual(new Set(f.generations()), new Set([second, f.current()]));
-	assert.equal(fs.existsSync(path.join(f.root, first)), false);
+	assert.deepEqual(
+		new Set(f.generations(nested)),
+		new Set([second, f.current(nested)]),
+	);
+	assert.equal(fs.existsSync(path.join(nested, first)), false);
 	assert.equal(fs.readFileSync(path.join(unrelated, "keep"), "utf8"), "keep");
 });
 
-test("an empty generation removes obsolete managed aliases after commit", (t) => {
+test("an empty manifest with pruning retires every store and removes managed aliases", (t) => {
 	const f = fixture(t);
+	const nested = f.storeOf(path.join(f.dest, "nested"));
 	const a = f.entry("nested/a", "secret");
 	f.run({ a });
-	f.run({}, { expect: { [a.path]: "secret" } });
+	f.run({}, { store: nested, expect: { [a.path]: "secret" } });
 	assert.equal(fs.existsSync(a.path), false);
 	assert.equal(fs.existsSync(path.dirname(a.path)), true);
-	assert.deepEqual(JSON.parse(fs.readFileSync(f.last)), {});
+	assert.deepEqual(JSON.parse(fs.readFileSync(f.last, "utf8")), {});
+	assert.equal(f.generations(nested).length, 2);
 });
 
-test("early and regular phases have independent pointers and pruning", (t) => {
+test("a directory that loses all of its secrets stops serving them", (t) => {
 	const f = fixture(t);
-	const earlyRoot = `${f.root}.for-users`;
-	const earlyLast = `${f.last}.for-users`;
+	const nested = f.storeOf(path.join(f.dest, "nested"));
+	const a = f.entry("nested/a", "one");
+	const b = f.entry("b", "two");
+	f.run({ a, b });
+	f.run(
+		{ b: f.entry("b", "three") },
+		{ store: nested, expect: { [a.path]: "one" } },
+	);
+	assert.equal(fs.existsSync(a.path), false);
+	assert.equal(f.read(b), "three");
+	assert.equal(f.generations(nested).length, 2);
+});
+
+test("early and regular phases have independent stores and pruning", (t) => {
+	const f = fixture(t);
+	const earlyStore = f.storeOf(f.dest, true);
 	const password = f.entry("password", "password");
-	f.run({ password }, { root: earlyRoot, last: earlyLast });
-	const early = f.current(earlyRoot);
+	f.run({ password }, { forUsers: true });
+	const early = f.current(earlyStore);
 	const a = f.entry("a", "regular");
 	f.run({ a });
 	f.run({ a: f.entry("a", "new-regular") });
-	assert.equal(f.current(earlyRoot), early);
+	assert.equal(f.current(earlyStore), early);
 	assert.equal(f.read(password), "password");
 	f.run({ a: f.entry("a", "FAIL") }, { fail: true });
 	assert.equal(f.read(password), "password");
 	assert.equal(f.read(a), "new-regular");
+	assert.equal(f.generations(earlyStore).length, 1);
 });
 
 test("a secret can migrate between provisioning phases", (t) => {
 	const f = fixture(t);
 	const a = f.entry("a", "old");
-	f.run({ a }, { root: `${f.root}.for-users`, last: `${f.last}.for-users` });
+	f.run({ a }, { forUsers: true });
 	f.run({ a: f.entry("a", "new") }, { expect: { [a.path]: "old" } });
 	assert.equal(f.read(a), "new");
+	assert.equal(fs.readlinkSync(a.path), path.join(".ageism", "current", "a"));
+	assert.ok(fs.existsSync(f.storeOf(f.dest, true)));
 });
 
 test("writable destination directories are rejected before publication", (t) => {
@@ -439,7 +528,7 @@ test("writable destination directories are rejected before publication", (t) => 
 	assert.equal(fs.existsSync(a.path), false);
 });
 
-test("duplicate canonical destinations and storage overlap are rejected", (t) => {
+test("duplicate, overlapping and invalid destinations are rejected", (t) => {
 	const f = fixture(t);
 	const a = f.entry("a", "secret");
 	const alias = path.join(f.dir, "alias");
@@ -450,9 +539,22 @@ test("duplicate canonical destinations and storage overlap are rejected", (t) =>
 		/duplicate destination/,
 	);
 	assert.match(
-		f.run({ a: { ...a, path: path.join(f.root, "secret") } }, { fail: true })
-			.stderr,
-		/overlaps generation/,
+		f.run(
+			{ a: { ...a, path: path.join(f.dest, ".ageism", "secret") } },
+			{
+				fail: true,
+			},
+		).stderr,
+		/overlaps a generation store/,
+	);
+	assert.match(
+		f.run(
+			{ a: { ...a, path: path.join(f.dest, "state.json") } },
+			{
+				fail: true,
+			},
+		).stderr,
+		/reserved/,
 	);
 	assert.match(
 		f.run({ a: { ...a, mode: "888" } }, { fail: true }).stderr,
@@ -467,7 +569,7 @@ test("a held lock fails closed without changing the active generation", async (t
 	f.run({ a });
 	const previous = f.current();
 	const holder = spawn("flock", [
-		path.join(f.root, "lock"),
+		path.join(f.storeOf(f.dest), "lock"),
 		process.execPath,
 		"-e",
 		"process.stdout.write('locked'); process.stdin.resume()",
@@ -483,4 +585,6 @@ test("a held lock fails closed without changing the active generation", async (t
 	const exited = once(holder, "exit");
 	holder.stdin.end();
 	await exited;
+	f.run({ a });
+	assert.equal(f.read(a), "old");
 });

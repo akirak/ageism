@@ -198,25 +198,15 @@ let
         true
       ];
     };
-    testSeparateGenerationDirectories = {
+    testPhaseStores = {
       expr = [
-        (lib.hasInfix "--generation-dir /run/ageism/.generations " mixedRegularService.script)
-        (lib.hasInfix "--generation-dir /run/ageism/.generations.for-users " earlyService.script)
+        (lib.hasInfix "--for-users " earlyService.script)
+        (lib.hasInfix "--for-users" mixedRegularService.script)
       ];
       expected = [
         true
-        true
+        false
       ];
-    };
-    testCustomGenerationDirectory = {
-      expr =
-        lib.hasInfix "--generation-dir /run/custom-generations "
-          (evaluate {
-            enable = true;
-            settings.generationDirectory = "/run/custom-generations";
-            secrets.regular = secret;
-          }).systemd.services.ageism-secrets.script;
-      expected = true;
     };
     testDuplicatePaths = {
       expr =

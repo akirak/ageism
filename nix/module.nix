@@ -27,8 +27,8 @@ let
       forUsers ? false,
     }:
     let
-      # Each phase publishes independently; neither may prune the other's generations.
-      generationDirectory = cfg.settings.generationDirectory + lib.optionalString forUsers ".for-users";
+      # Each phase has its own store in every destination directory, so they
+      # publish and prune independently even in shared directories.
       lastManifest =
         if cfg.settings.lastManifest == null then
           null
@@ -96,11 +96,11 @@ let
       '';
 
       script = ''
-        ${lib.getExe pkgs.nodejs} ${./decrypt-secrets.mjs} ${indexPath} --generation-dir ${lib.escapeShellArg generationDirectory} ${
+        ${lib.getExe pkgs.nodejs} ${./decrypt-secrets.mjs} ${indexPath}${lib.optionalString forUsers " --for-users"}${
           lib.optionalString (
             cfg.settings.pruneDirectory != null
-          ) "--prune ${lib.escapeShellArg cfg.settings.pruneDirectory}"
-        } ${lib.optionalString (lastManifest != null) "--last-manifest ${lib.escapeShellArg lastManifest}"}
+          ) " --prune ${lib.escapeShellArg cfg.settings.pruneDirectory}"
+        }${lib.optionalString (lastManifest != null) " --last-manifest ${lib.escapeShellArg lastManifest}"}
       '';
     };
 in
@@ -116,7 +116,7 @@ in
             options = {
               path = mkOption {
                 type = types.str;
-                description = "Stable symlink to this secret in the service's active generation.";
+                description = "Absolute destination of the decrypted secret, installed as a relative symlink into the .ageism generation store inside its parent directory.";
               };
               source = mkOption {
                 type = types.str;
@@ -142,26 +142,16 @@ in
       };
 
       settings = {
-        generationDirectory = mkOption {
-          type = types.str;
-          default = "/run/ageism/.generations";
-          description = ''
-            Directory containing plaintext generations and their atomic current
-            symlink. Use a volatile filesystem such as /run. Secrets needed for
-            user creation use a separate directory with a .for-users suffix.
-            This directory and all its ancestors must be root-owned and not
-            writable by group or others.
-          '';
-        };
-
         pruneDirectory = mkOption {
           type = types.nullOr types.str;
           default = null;
           example = "/run/ageism";
           description = ''
             After successfully publishing a generation, remove obsolete managed
-            secret symlinks beneath this directory and garbage-collect older
-            generations. The active and immediately previous generations are
+            secret symlinks beneath this directory, switch stores whose
+            directories no longer have secrets of the phase to an empty
+            generation, and garbage-collect older generations in the managed
+            stores. The active and immediately previous generations are
             retained. Unrelated files and directories are never removed.
           '';
         };
@@ -171,10 +161,14 @@ in
           default = null;
           example = "/var/lib/ageism/last-manifest.json";
           description = ''
-            Enable reuse of unchanged secrets from the active generation, and
-            expose its manifest at this path via a symlink. Manifest state is
-            committed atomically with the secrets; a failed update cannot leave
-            stale cache state. After reboot, secrets on /run are decrypted again.
+            Write the manifest of the last successful run to this file and
+            enable caching: unchanged entries are copied from the active
+            generation of their directory, provided their cached files still
+            exist. Files are copied rather than hard-linked, so generations
+            have independent inodes. The file is a plain record; reuse
+            decisions read the cache state committed inside each generation,
+            so a failed update cannot leave the cache describing a different
+            set of secrets. After reboot, secrets on /run are decrypted again.
             Secrets needed for user creation use a separate path with a
             .for-users suffix.
           '';
